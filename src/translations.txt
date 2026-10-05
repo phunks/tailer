@@ -1,0 +1,186 @@
+# English|Japanese|Simplified Chinese|Traditional Chinese|Korean
+Options|オプション|选项|選項|옵션
+Close log tab?|ログタブを閉じますか？|关闭日志标签页？|關閉日誌分頁？|로그 탭을 닫을까요?
+Closing stops log collection. Saved archives are kept.|閉じるとログ取得を停止します。保存済みログは残ります。|关闭会停止日志收集。已保存的存档会保留。|關閉會停止日誌收集。已儲存的封存會保留。|닫으면 로그 수집이 중지됩니다. 저장된 로그는 유지됩니다.
+SSH transport|SSH接続状態|SSH 连接状态|SSH 連線狀態|SSH 연결 상태
+Edit log and reconnect|ログを編集して再接続|编辑日志并重新连接|編輯日誌並重新連線|로그 편집 및 다시 연결
+Edit and reconnect…|編集して再接続…|编辑并重新连接…|編輯並重新連線…|편집 및 다시 연결…
+Reconnect / run again|再接続／再実行|重新连接 / 再次运行|重新連線／再次執行|다시 연결 / 다시 실행
+Log path, container or command|ログパス・コンテナ・コマンド|日志路径、容器或命令|日誌路徑、容器或命令|로그 경로, 컨테이너 또는 명령
+Reconnection starts a new archive. Existing archives are kept. Commands will run again.|再接続は新しい保存ログで開始します。以前の保存ログは残ります。コマンドは再実行されます。|重新连接会创建新的存档。现有存档会保留。命令将再次运行。|重新連線會建立新的封存。現有封存會保留。命令將再次執行。|다시 연결하면 새 로그 저장이 시작됩니다. 기존 로그는 유지됩니다. 명령은 다시 실행됩니다.
+Log source disconnected|ログ取得元に未接続・取得停止中|日志来源未连接或已停止|日誌來源未連線或已停止|로그 소스 연결 끊김 또는 수집 중지
+Filter enabled|フィルター有効|筛选已启用|篩選已啟用|필터 활성
+Search results|検索結果|搜索结果|搜尋結果|검색 결과
+Text trap enabled|文言検知有効|文本检测已启用|文字偵測已啟用|문구 감지 활성
+Connections|接続先管理|连接管理|連線管理|연결 관리
+Changes apply on the next connection. Connections used by tabs cannot be deleted.|編集内容は次回接続から反映されます。利用中の接続先は削除できません。|更改将在下次连接时生效。无法删除标签页正在使用的连接。|變更將於下次連線時生效。無法刪除分頁正在使用的連線。|변경 사항은 다음 연결부터 적용됩니다. 탭에서 사용 중인 연결은 삭제할 수 없습니다.
+Add…|追加…|添加…|新增…|추가…
+Edit…|編集…|编辑…|編輯…|편집…
+Delete|削除|删除|刪除|삭제
+Add connection|接続先を登録|添加连接|新增連線|연결 추가
+Edit connection|接続先を編集|编辑连接|編輯連線|연결 편집
+Connection name (required)|接続先名（必須）|连接名称（必填）|連線名稱（必填）|연결 이름 (필수)
+Host name / IP address (required)|ホスト名 / IPアドレス（必須）|主机名 / IP 地址（必填）|主機名稱 / IP 位址（必填）|호스트 이름 / IP 주소 (필수)
+User (blank = OS user)|ユーザー（空欄 = OSユーザー）|用户（留空 = 系统用户）|使用者（留空 = 系統使用者）|사용자 (비워 두면 OS 사용자)
+Port (0 = 22)|ポート（0 = 22）|端口（0 = 22）|連接埠（0 = 22）|포트 (0 = 22)
+Private key path (blank = standard ~/.ssh keys)|秘密鍵パス（空欄 = ~/.ssh の標準鍵）|私钥路径（留空 = ~/.ssh 标准密钥）|私鑰路徑（留空 = ~/.ssh 標準金鑰）|개인 키 경로 (비워 두면 ~/.ssh 기본 키)
+Registration does not connect. Passwords are not stored in configuration.|登録だけでは接続しません。パスワードは設定ファイルに保存しません。|添加连接不会立即连接。密码不会存入配置文件。|新增連線不會立即連線。密碼不會存入設定檔。|등록만으로 연결하지 않습니다. 비밀번호는 설정 파일에 저장하지 않습니다.
+Verify SSH host key|SSHホスト鍵の確認|验证 SSH 主机密钥|驗證 SSH 主機金鑰|SSH 호스트 키 확인
+Shared SSH authentication|共有SSH接続の認証|共享 SSH 连接认证|共用 SSH 連線驗證|공유 SSH 연결 인증
+Verify the fingerprint through a trusted channel before accepting.|指紋を信頼できる経路で確認してから承認してください。|请通过可信渠道核实指纹后再接受。|請透過可信管道核實指紋後再接受。|신뢰할 수 있는 경로로 지문을 확인한 후 승인하세요.
+Save in OS credential store|OSの資格情報ストアに保存する|保存到系统凭据存储|儲存至系統認證資料儲存區|OS 자격 증명 저장소에 저장
+Delete saved credentials|保存済み資格情報を削除|删除已保存的凭据|刪除已儲存的認證資料|저장된 자격 증명 삭제
+Settings|取得設定|设置|設定|설정
+Applies to new tabs only|新しいタブから適用（既存のタブには影響しません）|仅应用于新标签页|僅套用至新分頁|새 탭에만 적용
+Initial tail lines (0 = new output only)|接続時に取得する末尾の行数（0 = 追記のみ）|初始末尾行数（0 = 仅新增内容）|初始末尾行數（0 = 僅新增內容）|처음 가져올 마지막 줄 수 (0 = 새 출력만)
+Storage limit in MiB per tab (stops when reached)|保存容量上限 MiB／タブ（到達時は取得停止）|每个标签页存储上限 MiB（达到上限时停止）|每個分頁儲存上限 MiB（達到上限時停止）|탭당 저장 한도 MiB (도달 시 수집 중지)
+Logs are stored locally and may contain sensitive information.|ログはローカルに保存されます。機密情報に注意してください。|日志保存在本地，可能包含敏感信息。|日誌儲存在本機，可能包含敏感資訊。|로그는 로컬에 저장되며 민감한 정보가 포함될 수 있습니다.
+New SSH log|新規SSHログ接続|新建 SSH 日志|新增 SSH 日誌|새 SSH 로그
+Custom|カスタム|自定义|自訂|사용자 지정
+Log source|ログソース|日志来源|日誌來源|로그 소스
+File (tail)|ファイル（tail）|文件（tail）|檔案（tail）|파일 (tail)
+Docker container|Dockerコンテナ|Docker 容器|Docker 容器|Docker 컨테이너
+Custom command|カスタムコマンド|自定义命令|自訂命令|사용자 지정 명령
+Saved connection|登録済み接続先|已保存的连接|已儲存的連線|저장된 연결
+Input encoding|入力文字コード|输入字符编码|輸入字元編碼|입력 문자 인코딩
+Input is converted to UTF-8 for storage. CP932 is Windows Shift_JIS. LANG is unchanged.|入力をUTF-8に変換して保存します。CP932 = Windows系Shift_JIS。LANGは変更しません。|输入转换为 UTF-8 后保存。CP932 为 Windows Shift_JIS。不会更改 LANG。|輸入轉換為 UTF-8 後儲存。CP932 為 Windows Shift_JIS。不會變更 LANG。|입력을 UTF-8로 변환해 저장합니다. CP932는 Windows Shift_JIS입니다. LANG은 변경하지 않습니다.
+Connections…|接続先管理…|连接管理…|連線管理…|연결 관리…
+Absolute remote log path (required)|リモートログの絶対パス（必須）|远程日志绝对路径（必填）|遠端日誌絕對路徑（必填）|원격 로그 절대 경로 (필수)
+Container name / ID (required), e.g. web-1|コンテナ名 / ID（必須）例: web-1|容器名称 / ID（必填），例如 web-1|容器名稱 / ID（必填），例如 web-1|컨테이너 이름 / ID (필수), 예: web-1
+Tab name (optional)|タブ名（省略可）|标签页名称（可选）|分頁名稱（選填）|탭 이름 (선택)
+Remote command (pipelines and multiple lines supported)|SSH先で実行するコマンド（パイプ・複数行対応）|远程命令（支持管道和多行）|遠端命令（支援管線和多行）|원격 명령 (파이프 및 여러 줄 지원)
+Runs docker logs remotely. No Docker API port is needed. Saves stdout, stderr and Docker diagnostics.|SSH先のdocker logsを実行。Docker APIのポート公開は不要です。stdout・stderrとDocker診断を保存します。|在远程执行 docker logs。无需开放 Docker API 端口。保存 stdout、stderr 和 Docker 诊断。|在遠端執行 docker logs。無需開放 Docker API 連接埠。儲存 stdout、stderr 和 Docker 診斷。|원격으로 docker logs를 실행합니다. Docker API 포트 공개는 필요 없습니다. stdout, stderr와 Docker 진단을 저장합니다.
+Runs remotely with /bin/sh. Saves stdout and stderr (up to 8,192 command characters). Saved commands run again on startup.|SSH先の /bin/sh で実行。stdout・stderrを保存します（最大8,192文字）。保存したコマンドは次回起動時も実行します。|通过远程 /bin/sh 执行。保存 stdout 和 stderr（命令最多 8,192 字符）。已保存的命令将在下次启动时再次执行。|透過遠端 /bin/sh 執行。儲存 stdout 和 stderr（命令最多 8,192 字元）。已儲存的命令將於下次啟動時再次執行。|원격 /bin/sh로 실행합니다. stdout와 stderr를 저장합니다 (명령 최대 8,192자). 저장된 명령은 다음 시작 시 다시 실행됩니다.
+Privilege escalation|権限昇格|权限提升|權限提升|권한 상승
+None|なし|无|無|없음
+su (login)|su（ログイン）|su（登录）|su（登入）|su (로그인)
+Run as user|実行ユーザー|运行用户|執行使用者|실행 사용자
+Escalation passwords are entered separately. Requires Linux / macOS / BSD and a POSIX-compatible user shell. With a TTY, stderr is included in logs.|昇格用パスワードは別途入力。Linux / macOS / BSD、POSIX互換の対象ユーザーシェル向け。TTY使用中はstderrも取得ログに含まれます。|提权密码单独输入。需要 Linux / macOS / BSD 和 POSIX 兼容的用户 shell。使用 TTY 时 stderr 也包含在日志中。|提權密碼另行輸入。需要 Linux / macOS / BSD 和 POSIX 相容的使用者 shell。使用 TTY 時 stderr 也包含在日誌中。|권한 상승 비밀번호는 별도로 입력합니다. Linux / macOS / BSD 및 POSIX 호환 사용자 셸이 필요합니다. TTY 사용 시 stderr도 로그에 포함됩니다.
+Initial tail lines|最初に取得する末尾の行数|初始末尾行数|初始末尾行數|처음 가져올 마지막 줄 수
+Enter passwords / key passphrases when requested. Saving to the OS credential store is optional.|パスワード／鍵のパスフレーズは必要時に入力します。OSストアへの保存を選択できます。|需要时输入密码 / 密钥口令。可选择保存到系统凭据存储。|需要時輸入密碼 / 金鑰密語。可選擇儲存至系統認證資料儲存區。|필요할 때 비밀번호 / 키 암호를 입력합니다. OS 저장소에 저장할 수 있습니다.
+Select logs to follow|監視するログを選択|选择要跟踪的日志|選取要追蹤的日誌|추적할 로그 선택
+Open logs…|ログを開く…|打开日志…|開啟日誌…|로그 열기…
+Encoding for new local logs|新しく開くローカルログの入力文字コード|新建本地日志的输入编码|新開啟本機日誌的輸入編碼|새 로컬 로그의 입력 인코딩
+SSH logs…|SSHログ…|SSH 日志…|SSH 日誌…|SSH 로그…
+Settings…|設定…|设置…|設定…|설정…
+Converted and saved as UTF-8 · Search all history|UTF-8へ変換・保存 · 検索は履歴全体|转换为 UTF-8 保存 · 搜索全部历史|轉換為 UTF-8 儲存 · 搜尋全部歷史|UTF-8로 변환하여 저장 · 전체 기록 검색
+Configuration: |構成保存先: |配置保存位置: |設定儲存位置: |설정 저장 위치: 
+New logs with trapped text|検知文言を含むログ更新|包含匹配文本的新日志|包含符合文字的新日誌|감지 문구가 포함된 새 로그
+Unread log updates|未確認のログ更新|未读日志更新|未讀日誌更新|읽지 않은 로그 업데이트
+Select files using “Open logs…”|「ログを開く…」からファイルを選択してください|请通过“打开日志…”选择文件|請透過「開啟日誌…」選取檔案|“로그 열기…”에서 파일을 선택하세요
+SSH authentication / privilege escalation|SSH認証 / 権限昇格|SSH 认证 / 权限提升|SSH 驗證 / 權限提升|SSH 인증 / 권한 상승
+Password / passphrase|パスワード / パスフレーズ|密码 / 密钥口令|密碼 / 金鑰密語|비밀번호 / 키 암호
+Delete credentials saved for this prompt|この認証の保存済み資格情報を削除|删除此认证已保存的凭据|刪除此驗證已儲存的認證資料|이 인증에 저장된 자격 증명 삭제
+Auto-scroll|自動スクロール|自动滚动|自動捲動|자동 스크롤
+Add|追加|添加|新增|추가
+Copy|コピー|复制|複製|복사
+Add text trap|Text Trapを追加|添加文本规则|新增文字規則|텍스트 트랩 추가
+Edit text trap|Text Trapを編集|编辑文本规则|編輯文字規則|텍스트 트랩 편집
+Delete text trap|Text Trapを削除|删除文本规则|刪除文字規則|텍스트 트랩 삭제
+Add to Text Trap…|Text Trapに追加…|添加到文本规则…|新增至文字規則…|텍스트 트랩에 추가…
+Choose color…|色を選択…|选择颜色…|選擇顏色…|색상 선택…
+Highlight text color|ハイライト文字色|高亮文字颜色|醒目文字顏色|강조 텍스트 색상
+Show search context|検索結果の前後を表示|显示搜索上下文|顯示搜尋前後文|검색 문맥 표시
+Text or regular expression to add|追加する文言・正規表現|要添加的文字或正则表达式|要新增的文字或正規表示式|추가할 텍스트 또는 정규식
+A maximum of 10 tags is allowed.|タグは最大10件まで登録できます。|最多可添加10个标签。|最多可新增10個標籤。|태그는 최대 10개까지 등록할 수 있습니다.
+Enter text to detect.|検知する文言を入力してください。|请输入要检测的文字。|請輸入要偵測的文字。|감지할 텍스트를 입력하세요.
+Trap text must be at most 1,024 characters.|検知文言は1,024文字以内にしてください。|检测文字不能超过1,024个字符。|偵測文字不能超過1,024個字元。|감지 텍스트는 1,024자 이하여야 합니다.
+Choose a color in #RRGGBB format.|色は #RRGGBB 形式で指定してください。|请使用 #RRGGBB 格式指定颜色。|請使用 #RRGGBB 格式指定顏色。|색상은 #RRGGBB 형식으로 지정하세요.
+Invalid regular expression: {}|正規表現が不正です: {}|无效的正则表达式: {}|無效的正規表示式: {}|잘못된 정규식: {}
+Filter (all history)|フィルタ（履歴全体に適用）|筛选（全部历史）|篩選（全部歷史）|필터 (전체 기록)
+Regex|正規表現|正则表达式|正規表示式|정규식
+Ignore case|大小無視|忽略大小写|忽略大小寫|대소문자 무시
+Invert|反転|反向匹配|反向符合|반전
+Go live|ライブへ|返回实时|返回即時|실시간으로
+Search all history (independent of the filter)|全履歴検索（フィルタとは独立）|搜索全部历史（独立于筛选）|搜尋全部歷史（獨立於篩選）|전체 기록 검색 (필터와 별개)
+Search|検索|搜索|搜尋|검색
+Clear|解除|清除|清除|지우기
+Text trap|文言トラップ|文本触发|文字觸發|문구 감지
+Text to detect (blank disables)|検知文字列（空欄で無効）|检测文本（留空禁用）|偵測文字（留空停用）|감지할 문구 (비워 두면 비활성화)
+Flashes green on detection · Select tab to clear|検知時は緑点滅 · タブ選択で停止|检测时闪烁绿色 · 选择标签页清除|偵測時閃爍綠色 · 選取分頁清除|감지 시 초록색 깜박임 · 탭 선택으로 해제
+Archive: |保存先: |保存位置: |儲存位置: |저장 위치: 
+Display language|表示言語|界面语言|介面語言|표시 언어
+OK|OK|确定|確定|확인
+Cancel|キャンセル|取消|取消|취소
+Save|保存|保存|儲存|저장
+Close|閉じる|关闭|關閉|닫기
+Connected|接続中|已连接|已連線|연결됨
+Waiting / disconnected|接続待機／終了|等待连接 / 已断开|等待連線 / 已中斷|연결 대기 / 연결 종료
+{}: Connected|{}: 接続中|{}: 已连接|{}: 已連線|{}: 연결됨
+{}: Waiting / disconnected|{}: 接続待機／終了|{}: 等待连接 / 已断开|{}: 等待連線 / 已中斷|{}: 연결 대기 / 연결 종료
+Connection not found|接続先が見つかりません|未找到连接|找不到連線|연결을 찾을 수 없습니다
+Cannot create archive directory|保存フォルダを作成できません|无法创建保存目录|無法建立儲存目錄|저장 폴더를 만들 수 없습니다
+Check escalation method / run-as user|権限昇格方式／実行ユーザーを確認してください|请检查提权方式 / 运行用户|請檢查提權方式 / 執行使用者|권한 상승 방식 / 실행 사용자를 확인하세요
+Check the host name|ホスト名を確認してください|请检查主机名|請檢查主機名稱|호스트 이름을 확인하세요
+Select a regular file|通常のファイルを選択してください|请选择普通文件|請選取一般檔案|일반 파일을 선택하세요
+Starting connection / following|接続／監視開始中|正在连接 / 开始跟踪|正在連線 / 開始追蹤|연결 / 추적 시작 중
+Stopped|停止|已停止|已停止|중지됨
+Privilege escalation failed / ended. Check the user, sudo/su settings and user shell. Authentication output was not saved.|権限昇格に失敗／終了しました。ユーザー、sudo/su設定、対象ユーザーのシェルを確認してください。認証出力は保存していません|提权失败 / 已结束。请检查用户、sudo/su 设置和用户 shell。认证输出未保存。|提權失敗 / 已結束。請檢查使用者、sudo/su 設定和使用者 shell。驗證輸出未儲存。|권한 상승이 실패 / 종료되었습니다. 사용자, sudo/su 설정 및 사용자 셸을 확인하세요. 인증 출력은 저장하지 않았습니다.
+Escalation input is unavailable|昇格入力がありません|提权输入不可用|提權輸入無法使用|권한 상승 입력을 사용할 수 없습니다
+Storage limit reached. Collection stopped; history is retained.|保存容量上限に達したため取得を停止しました。履歴は保持されています|已达到存储上限。停止收集，保留历史。|已達到儲存上限。停止收集，保留歷史。|저장 한도에 도달하여 수집을 중지했습니다. 기록은 유지됩니다.
+Following|監視中|跟踪中|追蹤中|추적 중
+Saved {} KiB|保存 {} KiB|已保存 {} KiB|已儲存 {} KiB|저장됨 {} KiB
+Connection ended ({})|接続終了 ({})|连接结束 ({})|連線結束 ({})|연결 종료 ({})
+Saved history remains searchable|保存済み履歴は検索可能|已保存的历史仍可搜索|已儲存的歷史仍可搜尋|저장된 기록은 계속 검색할 수 있습니다
+Encoding conversion: replaced {} malformed / incomplete sequences|文字コード変換: 不正／不完全な入力を {} 件置換しました|编码转换: 已替换 {} 个无效 / 不完整序列|編碼轉換: 已替換 {} 個無效 / 不完整序列|인코딩 변환: 잘못된 / 불완전한 입력 {}건을 대체했습니다
+Context around history line {} (without filtering)|履歴の {} 行目の前後（フィルタ非適用）|历史第 {} 行的上下文（不应用筛选）|歷史第 {} 行的前後文（不套用篩選）|기록 {}번째 줄의 앞뒤 (필터 미적용)
+Filter matched {} lines|フィルタ一致 {} 行|筛选匹配 {} 行|篩選符合 {} 行|필터 일치 {}줄
+Showing up to the last 2,000 lines / 256KiB|表示は末尾最大2,000行 / 256KiB|最多显示末尾 2,000 行 / 256KiB|最多顯示末尾 2,000 行 / 256KiB|마지막 최대 2,000줄 / 256KiB 표시
+History search: {} matches (last 2,000 results maximum)|全履歴検索 {} 件（結果は末尾最大2,000件）|历史搜索: {} 个匹配（最多末尾 2,000 个结果）|歷史搜尋: {} 個符合（最多末尾 2,000 個結果）|전체 기록 검색 {}건 (마지막 최대 2,000건)
+Filter matched {} lines · Showing up to the last 2,000 lines / 256KiB|フィルタ一致 {} 行 · 表示は末尾最大2,000行 / 256KiB|筛选匹配 {} 行 · 最多显示末尾 2,000 行 / 256KiB|篩選符合 {} 行 · 最多顯示末尾 2,000 行 / 256KiB|필터 일치 {}줄 · 마지막 최대 2,000줄 / 256KiB 표시
+Too many authentication requests|認証入力が混雑しています|认证请求过多|驗證請求過多|인증 요청이 너무 많습니다
+Privilege escalation stopped|権限昇格を停止しました|已停止提权|已停止提權|권한 상승을 중지했습니다
+Privilege escalation cancelled|権限昇格をキャンセルしました|已取消提权|已取消提權|권한 상승을 취소했습니다
+Authentication prompt is too long|認証プロンプトが長すぎます|认证提示过长|驗證提示過長|인증 프롬프트가 너무 깁니다
+Privilege escalation → {}|権限昇格 → {}|权限提升 → {}|權限提升 → {}|권한 상승 → {}
+{} privilege escalation → {}|{} 権限昇格 → {}|{} 权限提升 → {}|{} 權限提升 → {}|{} 권한 상승 → {}
+Password (sudo: usually the SSH user; su: usually the target user)|パスワード（sudo: 通常は接続ユーザー、su: 通常は切り替え先ユーザー）|密码（sudo: 通常为 SSH 用户；su: 通常为目标用户）|密碼（sudo: 通常為 SSH 使用者；su: 通常為目標使用者）|비밀번호 (sudo: 보통 SSH 사용자, su: 보통 대상 사용자)
+Escalation startup output is too long. Cannot start log collection.|権限昇格の開始出力が長すぎます。ログ取得を開始できません|提权启动输出过长。无法开始收集日志。|提權啟動輸出過長。無法開始收集日誌。|권한 상승 시작 출력이 너무 깁니다. 로그 수집을 시작할 수 없습니다.
+Unsupported encoding: {}|未対応の文字コード: {}|不支持的编码: {}|不支援的編碼: {}|지원하지 않는 인코딩: {}
+Encoding conversion has finished|文字コード変換は終了しています|编码转换已结束|編碼轉換已結束|인코딩 변환이 종료되었습니다
+Unsupported log source: {}|未対応のログソースです: {}|不支持的日志来源: {}|不支援的日誌來源: {}|지원하지 않는 로그 소스: {}
+Enter a command (NUL is not allowed)|コマンドを入力してください（NUL文字は使用できません）|请输入命令（不允许 NUL 字符）|請輸入命令（不允許 NUL 字元）|명령을 입력하세요 (NUL 문자는 사용할 수 없습니다)
+Use an absolute path for remote logs|リモートログは絶対パスで指定してください|请使用远程日志的绝对路径|請使用遠端日誌的絕對路徑|원격 로그는 절대 경로로 지정하세요
+Check Docker container name / ID (letters, digits, _, ., -)|Dockerコンテナ名／IDを確認してください（英数字、_、.、-）|请检查 Docker 容器名称 / ID（字母、数字、_、.、-）|請檢查 Docker 容器名稱 / ID（字母、數字、_、.、-）|Docker 컨테이너 이름 / ID를 확인하세요 (영숫자, _, ., -)
+ …[long line truncated]| …[長い行を省略]| …[已截断长行]| …[已截斷長行]| …[긴 줄 생략]
+Search cancelled|検索をキャンセル|已取消搜索|已取消搜尋|검색 취소됨
+HOME is not set|HOMEが未設定です|未设置 HOME|未設定 HOME|HOME이 설정되지 않았습니다
+APPDATA is not set|APPDATAが未設定です|未设置 APPDATA|未設定 APPDATA|APPDATA가 설정되지 않았습니다
+LOCALAPPDATA is not set|LOCALAPPDATAが未設定です|未设置 LOCALAPPDATA|未設定 LOCALAPPDATA|LOCALAPPDATA가 설정되지 않았습니다
+Invalid save path|保存パスが不正です|保存路径无效|儲存路徑無效|저장 경로가 올바르지 않습니다
+Cannot read configuration format. Automatic saving is disabled.|設定ファイルの形式を読めません。自動保存を停止しました|无法读取配置格式。已禁用自动保存。|無法讀取設定格式。已停用自動儲存。|설정 파일 형식을 읽을 수 없습니다. 자동 저장을 중지했습니다.
+Cannot read configuration: {}|設定を読めません: {}|无法读取配置: {}|無法讀取設定: {}|설정을 읽을 수 없습니다: {}
+Cannot save configuration: {}|設定保存に失敗: {}|无法保存配置: {}|無法儲存設定: {}|설정을 저장할 수 없습니다: {}
+Invalid port|ポートが不正です|端口无效|連接埠無效|포트가 올바르지 않습니다
+Waiting for shared SSH connection…|共有SSH接続を待機中…|正在等待共享 SSH 连接…|正在等待共用 SSH 連線…|공유 SSH 연결 대기 중…
+Cannot connect: {}|接続できません: {}|无法连接: {}|無法連線: {}|연결할 수 없습니다: {}
+Cannot start: {}|開始できません: {}|无法开始: {}|無法開始: {}|시작할 수 없습니다: {}
+Saved in OS credential store|OSの資格情報ストアに保存しました|已保存到系统凭据存储|已儲存至系統認證資料儲存區|OS 자격 증명 저장소에 저장했습니다
+Cannot save credentials (no plaintext fallback): {}|資格情報を保存できません（平文保存はしません）: {}|无法保存凭据（不会以明文保存）: {}|無法儲存認證資料（不會以明文儲存）: {}|자격 증명을 저장할 수 없습니다 (평문으로 저장하지 않음): {}
+Deleted saved credentials|保存した資格情報を削除しました|已删除保存的凭据|已刪除儲存的認證資料|저장된 자격 증명을 삭제했습니다
+Cannot delete credentials: {}|資格情報を削除できません: {}|无法删除凭据: {}|無法刪除認證資料: {}|자격 증명을 삭제할 수 없습니다: {}
+Searching / filtering all history…|履歴全体を検索／フィルタ処理中…|正在搜索 / 筛选全部历史…|正在搜尋 / 篩選全部歷史…|전체 기록 검색 / 필터링 중…
+Authentication cancelled|認証をキャンセルしました|已取消认证|已取消驗證|인증을 취소했습니다
+Connection ended|接続終了|连接结束|連線結束|연결 종료
+Connection ended: {}|接続終了: {}|连接结束: {}|連線結束: {}|연결 종료: {}
+SSH channel request was rejected or timed out|SSHチャネル要求が拒否／タイムアウトされました|SSH 通道请求被拒绝或超时|SSH 通道請求遭拒或逾時|SSH 채널 요청이 거부되었거나 시간 초과되었습니다
+SSH channel request was rejected: {}|SSHチャネル要求が拒否されました: {}|SSH 通道请求被拒绝: {}|SSH 通道請求遭拒: {}|SSH 채널 요청이 거부되었습니다: {}
+SSH channel request timed out: {}|SSHチャネル要求がタイムアウトしました: {}|SSH 通道请求超时: {}|SSH 通道請求逾時: {}|SSH 채널 요청 시간이 초과되었습니다: {}
+Connection closed before the SSH channel request reply: {}|SSHチャネル要求の応答前に接続が終了しました: {}|收到 SSH 通道请求响应前连接已关闭: {}|收到 SSH 通道請求回覆前連線已關閉: {}|SSH 채널 요청 응답 전에 연결이 종료되었습니다: {}
+Too much output before the SSH channel reply|SSHチャネル応答前の出力が多すぎます|SSH 通道响应前的输出过多|SSH 通道回覆前的輸出過多|SSH 채널 응답 전 출력이 너무 많습니다
+SSH connection stopped|SSH接続を停止しました|SSH 连接已停止|SSH 連線已停止|SSH 연결이 중지되었습니다
+Shared SSH connection has ended|共有SSH接続は終了しています|共享 SSH 连接已结束|共用 SSH 連線已結束|공유 SSH 연결이 종료되었습니다
+Home directory was not found|ホームディレクトリが見つかりません|找不到主目录|找不到主目錄|홈 디렉터리를 찾을 수 없습니다
+Authentication stopped|認証を停止しました|认证已停止|驗證已停止|인증이 중지되었습니다
+SSH host certificates are not supported|SSHホスト証明書は未対応です|不支持 SSH 主机证书|不支援 SSH 主機憑證|SSH 호스트 인증서는 지원되지 않습니다
+Verify that the destination is trusted.|信頼できる接続先であることを確認してください。|请确认连接目标可信。|請確認連線目標可信。|신뢰할 수 있는 연결 대상인지 확인하세요.
+The @revoked / @cert-authority format in known_hosts is not supported|known_hostsの@revoked／@cert-authority形式は未対応です|不支持 known_hosts 中的 @revoked / @cert-authority 格式|不支援 known_hosts 中的 @revoked / @cert-authority 格式|known_hosts의 @revoked / @cert-authority 형식은 지원되지 않습니다
+Failed to decrypt the private key|秘密鍵の復号に失敗しました|私钥解密失败|私鑰解密失敗|개인 키 복호화에 실패했습니다
+Private key {}: {}|秘密鍵 {}: {}|私钥 {}: {}|私鑰 {}: {}|개인 키 {}: {}
+SSH authentication failed|SSH認証に失敗しました|SSH 认证失败|SSH 驗證失敗|SSH 인증에 실패했습니다
+Invalid authentication input|不正な認証入力|无效的认证输入|無效的驗證輸入|잘못된 인증 입력
+Remote command terminated by a signal|リモートコマンドがシグナルで終了しました|远程命令因信号终止|遠端命令因訊號終止|원격 명령이 시그널로 종료되었습니다
+Privilege escalation failed or ended. Authentication output was not saved.|権限昇格に失敗／終了しました。認証出力は保存していません|提权失败或已结束。认证输出未保存。|提權失敗或已結束。驗證輸出未儲存。|권한 상승이 실패하거나 종료되었습니다. 인증 출력은 저장되지 않았습니다.
+Local command|ローカルコマンド|本地命令|本機命令|로컬 명령
+Local command…|ローカルコマンド…|本地命令…|本機命令…|로컬 명령…
+Runs locally with /bin/sh. Saves stdout and stderr. Saved commands run again on startup.|ローカルの /bin/sh で実行。stdout・stderrを保存します。保存したコマンドは次回起動時も実行します。|通过本地 /bin/sh 执行。保存 stdout 和 stderr。已保存的命令将在下次启动时再次执行。|透過本機 /bin/sh 執行。儲存 stdout 和 stderr。已儲存的命令將於下次啟動時再次執行。|로컬 /bin/sh로 실행합니다. stdout와 stderr를 저장합니다. 저장된 명령은 다음 시작 시 다시 실행됩니다.

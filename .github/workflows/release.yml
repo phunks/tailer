@@ -1,0 +1,139 @@
+name: Release
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: ${{ matrix.job.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, qt_host: linux, qt_arch: linux_gcc_64, qt_version: '6.12.0' }
+          - { os: macos-26, target: aarch64-apple-darwin, qt_host: mac, qt_arch: clang_64, qt_version: '6.12.0' }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, qt_host: windows, qt_arch: win64_msvc2022_64, qt_version: '6.10.0' }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libgl1-mesa-dev libdbus-1-dev \
+            libxkbcommon-dev libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0 pkg-config
+
+      - name: Setup MSVC and Windows SDK
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install just
+        uses: taiki-e/install-action@just
+
+      - name: Setup Qt Bridge sources
+        shell: bash
+        run: just setup-ext
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.job.target }}
+
+      - name: Setup Python for Qt installer
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ matrix.job.qt_version }}
+          host: ${{ matrix.job.qt_host }}
+          target: desktop
+          arch: ${{ matrix.job.qt_arch }}
+
+      - name: Set release name
+        shell: bash
+        run: |
+          echo "RELEASE_NAME=tailer-${GITHUB_REF_NAME}-${{ matrix.job.target }}" >> "$GITHUB_ENV"
+          mkdir -p dist
+
+      - name: Build and package macOS application
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          just bundle-macos "${{ matrix.job.target }}"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "target/${{ matrix.job.target }}/release/bundle/macos/Tailer.app" \
+            "dist/$RELEASE_NAME.zip"
+
+      - name: Build Linux application
+        if: runner.os == 'Linux'
+        shell: bash
+        run: cargo build --release --locked --target "${{ matrix.job.target }}"
+
+      - name: Build Windows application
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: cargo build --release --locked --target "${{ matrix.job.target }}"
+
+      - name: Package Linux release
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p "dist/$RELEASE_NAME"
+          cp "target/${{ matrix.job.target }}/release/tailer" "dist/$RELEASE_NAME/"
+          cp README.md "dist/$RELEASE_NAME/"
+          cp LICENSE THIRD_PARTY_NOTICES.md "dist/$RELEASE_NAME/"
+          cp -R licenses "dist/$RELEASE_NAME/licenses"
+          tar -C dist -czf "dist/$RELEASE_NAME.tar.gz" "$RELEASE_NAME"
+          rm -rf "dist/$RELEASE_NAME"
+
+      - name: Deploy Qt and package Windows release
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $packageDirectory = "dist/$env:RELEASE_NAME"
+          New-Item -ItemType Directory -Force -Path $packageDirectory | Out-Null
+          Copy-Item "target/${{ matrix.job.target }}/release/tailer.exe" "$packageDirectory/tailer.exe"
+          Copy-Item README.md "$packageDirectory/"
+          Copy-Item LICENSE, THIRD_PARTY_NOTICES.md "$packageDirectory/"
+          Copy-Item -Recurse licenses "$packageDirectory/licenses"
+          & windeployqt --release --qmldir "$env:GITHUB_WORKSPACE/src" "$packageDirectory/tailer.exe"
+          if ($LASTEXITCODE -ne 0) { throw "windeployqt failed" }
+          Compress-Archive -Path $packageDirectory -DestinationPath "dist/$env:RELEASE_NAME.zip"
+          Remove-Item -Recurse -Force $packageDirectory
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.job.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release files
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: release/*

@@ -1,0 +1,337 @@
+# Tailer
+A multi-tab log viewer built with Rust, Qt Bridge for Rust, and Qt Quick.
+![window.png](.github/images/window.png)
+Tailer follows local files, streams logs over SSH, and runs custom commands. Received logs are converted to UTF-8 and archived locally, so display filtering does not discard received history.
+
+## Requirements
+
+- A recent stable Rust toolchain supporting edition 2024 and the dependencies in `Cargo.lock`. Rust 1.88 alone is not a verified minimum for the current dependency set.
+- Qt 6.10 or later with Qt Quick, Controls, and Dialogs, plus a C++ toolchain.
+- The Qt Bridge sources at `ext/qtbridge-rust` in the current checkout.
+- OS credential-store support through `keyring`. Linux requires a compatible Secret Service provider and a session D-Bus.
+
+The current development environment uses Qt 6.12.0 on macOS arm64. Qt Bridge support for this platform is experimental.
+
+### External command dependencies
+
+| Feature | Local requirement | Remote requirement |
+| --- | --- | --- |
+| Local file following | None | Not applicable |
+| Filtering and history search | None | Not applicable |
+| SSH transport and authentication | None; implemented with `russh` | An SSH server |
+| Remote file following | None | POSIX-compatible shell and `tail` with `-n` and `-F` |
+| Remote Docker logs | None | Docker CLI and daemon access |
+| Remote custom commands | None | `/bin/sh` and the commands in the script |
+| Local custom commands | `/bin/sh` and the commands in the script | Not applicable |
+| Remote privilege escalation | None | `sudo` or `su`, `stty`, and a compatible shell |
+
+Normal file following, searching, and SSH do not require local `tail`, `grep`, or OpenSSH executables. Arbitrary local command execution still depends on the local shell and installed tools.
+
+## Running on the current macOS environment
+
+```sh
+export PATH="$HOME/Qt/6.12.0/macos/bin:$PATH"
+export DYLD_FRAMEWORK_PATH="$HOME/Qt/6.12.0/macos/lib${DYLD_FRAMEWORK_PATH:+:$DYLD_FRAMEWORK_PATH}"
+cargo run --manifest-path $HOME/RustroverProjects/tailer/Cargo.toml
+```
+
+These paths describe the development machine; adjust them for your checkout and Qt installation. The first build may require network access to download dependencies.
+
+## Packaging and releases
+
+### macOS application bundle
+
+With your Qt installation's `bin` directory on `PATH`, run:
+
+```sh
+just --justfile justfile bundle-macos
+open target/release/bundle/macos/Tailer.app
+```
+
+Adjust the absolute checkout path for your machine. The packaging script builds
+with `cargo build --release --locked`, embeds `icons/icon.icns`, and uses
+`macdeployqt` to copy Qt frameworks, plugins, and imported QML modules into the
+bundle. Qt does not need to be installed on the destination Mac. The optional
+argument to `bundle-macos` is a Rust target triple; in that case the bundle is
+under `target/<target>/release/bundle/macos/Tailer.app`. The corresponding Rust
+target and compatible Qt libraries must already be installed.
+
+The bundle identifier is `app.tailer.desktop`; change it to an identifier you
+control before setting up Developer ID signing. Bundles are ad-hoc signed for
+local execution, **not Developer ID signed or notarized**. Downloaded releases
+may be blocked by Gatekeeper. Public distribution requires an appropriate
+signing/notarization setup; this workflow does not provide one.
+
+### Windows icon
+
+Release builds use the Windows GUI subsystem (no console window). `build.rs`
+embeds `icons/icon.ico` into `tailer.exe` using the Windows SDK's `rc.exe`, without
+an additional Rust dependency. Build with the MSVC Rust toolchain in a Visual
+Studio Developer shell. The workflow sets this environment up and uses
+`windeployqt` to include Qt DLLs, plugins, QML modules, and the MSVC runtime.
+Windows packages are not Authenticode signed. Windows runtime behavior has not
+been verified on the macOS development machine.
+
+## Basic usage
+
+- Use **Open logs…** or Cmd+O to select one or more local files.
+- Use **Connections…** to register a name, host, user, port, and private-key path.
+- Use **SSH logs…** to select a saved connection and a remote file, Docker container, or custom command.
+- Close a tab with its × button or Cmd+W to stop its channel or local collection process.
+- Disabling **Auto-scroll** does not stop reception or archiving. Scrolling away from the bottom disables it for that tab; enable it again to resume following the display.
+- Starting a mouse selection pauses auto-scroll. While dragging or text is selected, the main log document stays stable so new output cannot reset the selection or its anchor. Reception, decoding, archiving, and trap alerts continue; clearing the selection applies the latest display. Enabling **Auto-scroll** clears the selection and resumes the latest output.
+- A green dot indicates newly received logs in an inactive tab. Selecting the tab clears it. Initial data counts as reception, but changing filters or searches does not. Indicators reset on restart.
+
+### Text traps
+
+Enter a literal string or regular expression in **Text trap**, then press **Add** or Enter. Each tab supports up to **10 tags**, with a 1,024-character limit per tag. **Regex** and **Ignore case** are configured per tag. Typing alone does not change active rules.
+
+Click a tag to edit its expression, matching options, and highlight text color (preset swatches, `#RRGGBB`, or a color picker). Press **Save** to apply changes; **×** deletes a tag. Select text in the log view or search results and right-click **Add to Text Trap…** to open the editor with that text. Selected text defaults to literal matching. The search result's line-number arrow opens its surrounding history.
+
+Tags and colors are saved independently for each tab. Existing single-string traps migrate to the first green tag. Removing all tags disables detection.
+
+Traps inspect newly received data independently of the display filter. A match makes the green dot on an inactive tab blink. Selecting the tab clears the alert; matches in the active tab do not blink.
+
+Matching text is highlighted in bold in each tag's chosen color, including previously displayed history, search context, and search results. Earlier tags take color priority where matches overlap. Re-displaying history or changing settings does not trigger another reception alert. Matches can span receive boundaries; configuration changes reset partial-match state. Initial logs are detected only if they arrive after configuration.
+
+Regex uses the same Rust `regex` syntax as filtering/searching; look-around and backreferences are not supported. Zero-length matches are ignored. Streaming regex detection retains up to 256 KiB of previous UTF-8 input (plus boundary bytes), so arbitrarily long cross-receive matches are not guaranteed. A growing match at the same starting position alerts only once; end anchors are evaluated against currently received data, not a finalized file. Sound and OS notifications are not implemented.
+
+## SSH connections
+
+SSH runs inside the application using `russh`. Tabs referencing the same connection ID share one authenticated connection, with an independent channel per tab.
+
+Registering a profile does not connect immediately. The first tab opens the connection, and closing the last referencing tab stops it. Closing one tab does not stop the other channels. If a shared connection is lost, Tailer does not silently create an independent connection. Close and reopen the affected tabs to reconnect; automatic reconnection is not implemented.
+
+Profile edits apply to the next connection. Profiles referenced by tabs cannot be deleted.
+
+### Defaults and OpenSSH compatibility
+
+- A blank user uses the OS user name from `USER` or `USERNAME`.
+- Port `0` means `22`.
+- A blank key path tries existing `~/.ssh/id_ed25519`, `id_ecdsa`, and `id_rsa`, in that order.
+- Explicit key paths may start with `~/`.
+- Home-directory lookup uses `HOME`, falling back to `USERPROFILE`.
+
+OpenSSH-format private keys, including encrypted keys, are supported. **`~/.ssh/config`, aliases defined there, ProxyJump, ProxyCommand, ssh-agent, and user/host certificates are not supported.** Profiles migrated from the OpenSSH backend must specify the actual host, user, port, and key as needed.
+
+### Authentication and host keys
+
+Password, private-key passphrase, and keyboard-interactive prompts reach the GUI through in-process messages. No external authentication helper, ASKPASS executable, ControlMaster process, or Unix socket is required.
+
+On first connection, verify the host-key fingerprint through a trusted channel before accepting it. Accepted keys are saved to `~/.ssh/known_hosts`. A changed key of the same algorithm is rejected. Hashed host names are supported. Files containing `@revoked` or `@cert-authority` entries are rejected rather than ignoring unsupported marker semantics.
+
+SSH authentication and host-key confirmation use the shared connection dialog; sudo/su prompts use the tab dialog. Cancelling authentication stops the attempt and reports an error.
+
+Selecting **Save in OS credential store** saves eligible passwords or passphrases through the platform backend. Host-key confirmation and keyboard-interactive answers, including OTPs, are not stored. Stored values are tried once per broker session; another request returns to the dialog. Saved credentials can also be deleted there.
+
+Saving happens when an answer is submitted, not after server verification. A missing or locked credential store may prevent saving; there is no plaintext fallback. Passwords are excluded from workspace JSON, process arguments, and environment variables. Input fields are cleared, but complete erasure of temporary GUI/Rust memory is not guaranteed. Credentials saved by the former backend may need to be entered and saved again.
+
+### Channel replies and diagnostics
+
+PTY and command requests wait for explicit success or failure replies. Window-size notifications before the reply are not treated as failures, and early stdout/stderr is retained. Requests have a 15-second reply timeout and can be cancelled by stopping the tab.
+
+Application-owned diagnostics distinguish rejection, timeout, and connection closure before a reply, and are translated into the selected display language. SSH-library and OS diagnostics remain unchanged. Remote stdout/stderr is archived as logs.
+
+## Remote log sources
+
+### Files
+
+Specify an absolute remote path. Tailer runs `tail -n N -F` on the server. Rotation and truncation follow the remote command's implementation. Lines older than the initial selection are not part of that session's archive or search history.
+
+### Docker containers
+
+Select **Docker container** and enter a name or ID. Tailer runs:
+
+```sh
+docker logs --tail N --follow --timestamps CONTAINER
+```
+
+No Docker API TCP port needs to be exposed. The SSH user or selected escalation user must have daemon access. Docker permissions are powerful; configure them carefully.
+
+Both stdout and stderr are saved, including Docker CLI diagnostics. Only logs available through the Docker logging setup can be collected. Container enumeration, automatic reconnection, and following recreated containers are not implemented. Live Docker-over-SSH integration has not been verified; tests use a substitute CLI process to check arguments and capture behavior.
+
+### Custom remote commands
+
+Select **Custom command**, enter a script, and optionally provide a tab name. Scripts run through remote `/bin/sh -c`, supporting pipelines, expansions, redirects, and multiple lines.
+
+linux
+```sh
+kubectl logs -f deployment/web -n production --all-containers=true
+podman logs -f --tail 50 web
+container logs --follow web
+journalctl -f -u nginx --no-pager
+```
+routeros
+```routeros
+/log/print follow-only where topics~"firewall"
+```
+
+
+Availability and permissions depend on the server. There is no dedicated resource-selection UI for these tools.
+
+Initial-line options are not automatically added to custom scripts. Specify them in the command. Empty scripts and NUL characters are rejected; the persisted limit is 8,192 characters.
+
+**Commands are saved and rerun when the workspace is restored. Secrets embedded in commands are saved too. Commands can perform arbitrary operations without an additional confirmation dialog.** Use foreground streaming commands. Closing the channel does not guarantee termination of daemonized or detached processes.
+
+Log-source IDs are persisted as `file`, `docker`, or `custom`. Old tabs without an ID restore as file sources.
+
+## Local custom commands
+
+Use **Local command…** to enter a script, tab name, and input encoding. Examples: `docker logs -f --tail 50 web` or `podman logs -f web`.
+
+Scripts run through local `/bin/sh -c` without SSH. Pipelines, multiple lines, stdout/stderr capture, decoding, archiving, searching, traps, and storage limits are supported. Initial-line options belong in the script.
+
+Commands inherit the application's working directory and environment, including `PATH`. If a GUI launch cannot find a tool, use its absolute path or set `PATH` in the script. Interactive stdin is not supported. Closing the tab stops collection but does not guarantee termination of detached descendants.
+
+Local scripts are persisted and executed again at startup. The security precautions for remote custom commands apply here too.
+
+## Privilege escalation
+
+Select **None**, **sudo**, or **su (login)** and a target user, defaulting to `root`. Passwordless sudo is supported. Password requests appear separately from SSH authentication. Usually sudo requires the SSH user's password and su requires the target user's password, subject to server policy.
+
+Tailer requests a PTY, disables echo and newline conversion, and starts escalation. Passwords are sent over channel stdin. Output before the private readiness marker is excluded from the archive and search. Cancellation or escalation failure stops collection.
+
+The wrappers target Linux/macOS/BSD with compatible sudo/su and POSIX shells. `su - USER -c COMMAND` requires a compatible target-user shell. Custom PAM, multi-stage escalation, localized prompts, csh-style shells, and startup scripts that re-enable echo may not work. sudo uses a specified prompt; su expects English `Password:` with `LC_ALL=C`. After readiness, PTY diagnostics are part of the collected stream. Use only trusted servers.
+
+The PTY/password/marker transport is covered by a Rust test server. Actual production-server sudo/su behavior remains unverified.
+
+## Collection settings and archives
+
+**Settings…** controls initial lines (default: 50) and capacity (default: 512 MiB per tab). Changes apply to new tabs. SSH tabs can override initial lines when opened; `0` selects newly appended data only.
+
+Local following runs in Rust with idle polling every 100 ms. It supports initial last-N-line selection, appends, detected truncation, replacement, and temporary path disappearance. Initial selection recognizes UTF-16LE/BE newline code units. Truncation followed by regrowth between polls may be missed, and unread data in a replaced file may be lost.
+
+Received data is decoded and archived before filtering. The archive path is shown in the UI. Unix session directories use `0700`, and archive files use `0600`. Archives may contain sensitive data and remain after closing tabs or the app. Remove unwanted session directories manually.
+
+Reaching capacity stops collection without discarding saved history. Excess data is not saved. Disk-full and write errors also stop collection and appear in status messages.
+
+## Workspace persistence
+
+Tailer saves tab order, profiles, key paths, escalation settings, collection settings, encodings, selected tab, window size, filter/search/trap settings, and auto-scroll. Restoration starts new sessions and reruns saved commands; it does not automatically reopen old archives. Passwords are excluded from JSON.
+
+The format is version 2. Version 1 inline SSH settings migrate into profiles deduplicated by host, user, port, and key. Tabs reference profile IDs.
+
+| OS | Configuration | Session archives |
+| --- | --- | --- |
+| macOS | `~/Library/Application Support/Tailer/workspace.json` | `~/Library/Caches/Tailer/sessions` |
+| Linux | `${XDG_CONFIG_HOME:-~/.config}/Tailer/workspace.json` | `${XDG_CACHE_HOME:-~/.cache}/Tailer/sessions` |
+| Windows | `%APPDATA%\Tailer\workspace.json` | `%LOCALAPPDATA%\Tailer\sessions` |
+
+Empty or relative Linux XDG paths fall back to home-directory defaults. Legacy macOS settings from `~/Library/Preferences/tailer.ini` migrate if no new configuration exists. Invalid configuration is reported and not automatically overwritten.
+
+**The application is currently built and tested on macOS.** Platform paths and credential backends do not imply full portability. Linux builds and credential-store integration, and Windows Qt builds, local shells, and access controls remain unverified. SSH no longer depends on Unix sockets.
+
+## Filtering and history search
+
+The **Options** button beside **Auto-scroll** expands the filter, search, match-summary, and text-trap controls. These controls start collapsed for each tab. Collapsing them preserves their values and does not disable filtering, search results, or text-trap detection. The button indicates configured filters, available search results, and configured traps; query errors remain visible even while collapsed. Expansion state is not saved across restarts.
+
+- Filtering scans the saved archive and displays the most recent matching lines.
+- Literal and regex matching use Rust's `regex`, with Unicode case-insensitive matching and inverted filtering. No external `grep` is used.
+- Patterns support `\d`, `\s`, and lazy quantifiers such as `.*?`. Lookaround and backreferences are unsupported.
+- Regexes are evaluated per line. Syntax differs from the former `grep -E` backend; review saved patterns after migration.
+- **Search** scans history independently of the display filter. It counts matches and retains up to the last 2,000 results / 256 KiB.
+- Selecting a result shows ten surrounding lines on each side. **Go live** returns to filtered display.
+- The selected history line has a translucent, theme-colored background, while text-trap matches keep their configured text colors. **Go live** or a new search clears the selection and returns to the normal display (respecting any active filter).
+- Tabs show a persistent red dot while their log source is disconnected, waiting for a connection, or has stopped collecting. Selecting the tab does not clear it. Once collection is active, the dot is hidden unless there are unread updates (green); text-trap alerts blink green. This indicates the log channel/collector state, not just the shared SSH transport state. Automatic reconnection is not implemented.
+- Right-click a tab to **Edit and reconnect…** or **Reconnect / run again**. Editing updates the existing tab, preserving filter/search/trap settings. A new archive is created; previous archives remain on disk. Commands execute again. Shared SSH host/user/key settings are edited separately under **Connections…**.
+- Exception: changing only the encoding (and optionally the tab title) reinterprets the current session's original received bytes without reconnecting or rerunning commands. The × button asks for confirmation; Cancel and Escape leave the tab open. When auto-scroll is off, incoming logs preserve the current scroll offset.
+- Older archived lines remain searchable even when no longer visible. Paging beyond the retained result limit is not implemented.
+- Background workers process searches, not the UI thread. Reception updates currently rescan archives, so large histories can take time.
+
+Example filter for GET requests with selected HTTP status codes:
+
+```regex
+"GET [^"]*" (403|404|500)(\s|$)
+```
+
+Use this in filter/search fields or a text-trap tag with **Regex** enabled.
+
+## Input encodings and display limits
+
+Choose encoding when opening SSH logs or from the toolbar for new local logs. UTF-8 is the default. Encoding is saved per tab. To correct an existing tab, right-click, choose **Edit and reconnect…**, and change only its encoding; previous and future input use the new decoding without restarting the source. Automatic detection is not implemented.
+
+Supported encodings: UTF-8, CP932, EUC-JP, ISO-2022-JP, UTF-16LE, UTF-16BE, GB18030, BIG5, CP949, WINDOWS-1252, and ISO-8859-1.
+
+`encoding_rs` converts incrementally across receive boundaries. CP932 uses the WHATWG Shift_JIS mapping and CP949 uses EUC-KR. ISO-8859-1 uses exact Latin-1, separately from Windows-1252. No external `iconv` is required. Converted UTF-8 is archived alongside private original-byte data for re-decoding; authentication responses are excluded. The UTF-8 capacity is unchanged; original bytes are additionally bounded to four times that capacity. Re-decoding uses a temporary file (up to the UTF-8 capacity), so disk usage increases. Filters, searches, and traps use UTF-8. Archives made before original-byte preservation cannot recover malformed input. Re-decoding is limited to the current session, and fails without replacing its UTF-8 archive if the converted data exceeds capacity. OS locale does not control matching.
+
+Malformed input and incomplete characters at stream finalization are replaced and counted in status messages. Encoding selection does not change `LANG`; escalation wrappers use `LC_ALL=C`.
+
+Starting ISO-2022-JP partway through a file may lose shift state. Remote `tail` does not interpret encodings; adjust remote commands for UTF-16 or other affected formats.
+
+Display is limited to 2,000 lines / 256 KiB. Full received content is archived within capacity, but very long displayed lines are truncated. Search decoding is also limited to 256 KiB per line: omitted suffixes are not matched, and end anchors use the truncated representation. The UI polls background results every 250 ms.
+
+## Display languages
+
+Select Japanese, English, Simplified Chinese, Traditional Chinese, or Korean under **Settings…**. Language can change while running and is persisted. Initial selection follows the Qt-reported locale, falling back to English.
+
+Application labels, dialog buttons, status messages, search summaries, and application-owned errors are translated. Logs, profile/tab names, commands, paths, and external diagnostics are not. Native file-dialog internals follow OS/Qt language settings.
+
+The catalog is `src/translations.txt` in this checkout, with five columns: English key, Japanese, Simplified Chinese, Traditional Chinese, and Korean. Source-code labels and application-owned messages use English keys. `{}` marks dynamic values. Tests check coverage, placeholder counts, and formatted SSH-error translation. Chinese and Korean translations have not had native-speaker review.
+
+## Testing
+
+With the Qt environment configured:
+
+```sh
+cargo test --manifest-path Cargo.toml
+cargo fmt --manifest-path Cargo.toml --check
+```
+
+The last verified code run completed **69 tests successfully**, with one real-OpenSSH test excluded from the default suite. That test also passed separately against a disposable local OpenSSH server.
+
+Coverage includes local following/rotation, decoding, capacity, traps, search, persistence, credentials, host keys, shared SSH channels, key/password/keyboard-interactive authentication, encrypted keys, and PTY transport. Regression tests cover window notifications before channel replies, early output preservation, and English SSH errors.
+
+### Reader tests without Qt
+
+```sh
+rustc --edition=2024 --test src/tail.rs -o /tmp/tailer-reader-tests
+/tmp/tailer-reader-tests
+```
+
+### Real OpenSSH interoperability
+
+Use a disposable server on `127.0.0.1` authorizing the supplied key and user:
+
+```sh
+TAILER_TEST_SSH_PORT=2222 \
+TAILER_TEST_SSH_USER=testuser \
+TAILER_TEST_SSH_KEY=/absolute/path/to/test_private_key \
+cargo test --manifest-path Cargo.toml \
+  real_openssh_exec -- --ignored
+```
+
+The test uses temporary known-hosts storage and a small `printf` script to verify stdout/stderr. The application does not invoke a local SSH client.
+
+### GUI integration checks
+
+With Qt's `bin` directory on `PATH` and its runtime libraries configured, run `python3 scripts/test-log-scroll.py` to check wheel scrolling, auto-scroll suspension, and appended logs using the production log-view component with Qt Quick Test.
+
+Run `python3 scripts/test-trap-results.py` to verify selection, right-click selection preservation, and the context button in the production search-result delegate. The two-tab smoke check also exercises tag addition, expression/color editing, invalid-regex rejection, the 10-tag limit, deletion, cancellation, and tab isolation. Rust tests cover multi-rule streaming matches, overlap priority, HTML safety, bounded UTF-8 carry, and legacy settings migration.
+
+- `--smoke-test /absolute/path/to/log`: opens two tabs and checks reception, alerts, highlighting, filtering, and searching. Start with `smoke-initial` in the log and append `smoke-appended` after startup. It exits after approximately five seconds.
+- `--connection-ui-test`: checks profile creation and remote-source selection.
+- `--i18n-test en`: checks language switching and persistence; also accepts `ja`, `zh-CN`, `zh-TW`, and `ko`.
+
+Use `QT_QPA_PLATFORM=offscreen` for headless checks and an empty temporary `HOME`, because UI checks use normal workspace persistence. English UI, connection UI, and the two-tab smoke check have passed on macOS.
+
+Production-server escalation, multi-stage authentication, and live Docker-over-SSH remain outside verified coverage.
+
+## Licensing
+
+Tailer's original project code is licensed under the [MIT License](LICENSE),
+Copyright (c) 2026 pnk. Dependencies retain their own licenses; MIT does not
+relicense Qt, Qt Bridge, or other third-party components.
+
+The packaging script and release workflow include `LICENSE`,
+`THIRD_PARTY_NOTICES.md`, and the entire `licenses` directory. On macOS these
+are inside `Tailer.app/Contents/Resources`; Linux and Windows archives include
+them beside the executable. See [third-party notices](THIRD_PARTY_NOTICES.md)
+for Qt and Qt Bridge licensing and source references.
+
+Including license texts alone does not complete LGPL compliance. Before public
+distribution, verify the licenses of all deployed Qt/QML modules, complete the
+third-party notice inventory (including Rust dependencies and Qt's bundled
+components), provide the corresponding library sources through a compliant
+distribution method, and document how to rebuild/relink with modified Qt Bridge
+and replace/re-sign Qt libraries. The workflow does not yet provide a complete
+corresponding-source release archive or a verified license inventory.
