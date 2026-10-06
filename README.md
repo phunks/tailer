@@ -74,7 +74,7 @@ been verified on the macOS development machine.
 
 ## Basic usage
 
-- Use **Open logs…** or Cmd+O to select one or more local files.
+- Use **Open logs…** or Cmd+O (Ctrl+O on Windows/Linux) to select one or more local files. You can also drag and drop one or more files onto the window to open each in a new tab, using the currently selected local encoding.
 - Use **Connections…** to register a name, host, user, port, and private-key path.
 - Use **SSH logs…** to select a saved connection and a remote file, Docker container, or custom command.
 - Close a tab with its × button or Cmd+W to stop its channel or local collection process.

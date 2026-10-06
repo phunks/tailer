@@ -134,6 +134,19 @@ ApplicationWindow {
     onWidthChanged: scheduleSave()
     onHeightChanged: scheduleSave()
 
+    function localFilePath(url, platform = Qt.platform.os) {
+        const match = /^file:\/\/([^/]*)(\/.*)$/i.exec(url.toString());
+        if (!match) return url.toString();
+        const host = match[1];
+        let path = decodeURIComponent(match[2]);
+        if (host !== "" && host.toLowerCase() !== "localhost")
+            return "//" + host + path;
+        // File URLs have a leading slash before Windows drive letters.
+        if (platform === "windows" && /^\/[A-Za-z]:\//.test(path))
+            path = path.slice(1);
+        return path;
+    }
+
     function addLog(path, source = "file", title = "", encoding = localEncoding.currentText) {
         logs.append({
             logPath: path,
@@ -683,10 +696,38 @@ ApplicationWindow {
         fileMode: FileDialog.OpenFiles
         onAccepted: {
             for (const url of selectedFiles) {
-                const path = decodeURIComponent(url.toString().replace(/^file:\/\/(localhost)?/, ""));
+                const path = root.localFilePath(url);
                 root.addLog(path);
             }
         }
+    }
+
+    function hasLocalFileUrls(urls) {
+        for (const url of urls)
+            if (/^file:\/\//i.test(url.toString())) return true;
+        return false;
+    }
+    function dropLocalFiles(drop) {
+        if (!drop.hasUrls || !hasLocalFileUrls(drop.urls)) {
+            drop.accepted = false;
+            return;
+        }
+        for (const url of drop.urls) {
+            if (/^file:\/\//i.test(url.toString()))
+                root.addLog(root.localFilePath(url));
+        }
+        // Opening a log must never request moving the original file.
+        drop.accept(Qt.CopyAction);
+    }
+    DropArea {
+        id: fileDropArea
+        parent: root.contentItem.parent
+        anchors.fill: parent
+        z: 100
+        onEntered: (drag) => {
+            drag.accepted = drag.hasUrls && root.hasLocalFileUrls(drag.urls);
+        }
+        onDropped: (drop) => root.dropLocalFiles(drop)
     }
 
     Shortcut {
