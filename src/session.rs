@@ -974,6 +974,7 @@ pub fn pattern(text: String, regex: bool, ignore_case: bool, invert: bool) -> Pa
         regex,
         ignore_case,
         invert,
+        numeric: Value::Null,
     }
 }
 

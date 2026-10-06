@@ -65,6 +65,44 @@ fn bounded_int(value: &Value, default: u64, min: u64, max: u64) -> Value {
 
 /// Whitelist only non-secret configuration. Never serialize arbitrary QML data.
 pub fn sanitize(value: &Value) -> Value {
+    let mut groups = Vec::new();
+    if let Some(input) = value["bookmarkGroups"].as_array() {
+        for entry in input.iter().take(100) {
+            let id = entry["id"].as_str().unwrap_or_default();
+            let name = entry["name"].as_str().unwrap_or_default().trim();
+            if id.is_empty()
+                || id.len() > 128
+                || name.is_empty()
+                || groups.iter().any(|g: &Value| g["id"] == id)
+            {
+                continue;
+            }
+            groups.push(
+                json!({"id":id, "name":name.chars().take(256).collect::<String>(),
+                "parentId":entry["parentId"].as_str().unwrap_or_default(),
+                "expanded":entry["expanded"].as_bool().unwrap_or(true)}),
+            );
+        }
+    }
+    // Only retain existing parents, and break cycles before exposing the tree to QML.
+    for index in 0..groups.len() {
+        let mut seen = vec![groups[index]["id"].as_str().unwrap().to_owned()];
+        let mut parent = groups[index]["parentId"].as_str().unwrap().to_owned();
+        while !parent.is_empty() {
+            if seen.contains(&parent) {
+                groups[index]["parentId"] = json!("");
+                break;
+            }
+            seen.push(parent.clone());
+            match groups.iter().find(|g| g["id"] == parent) {
+                Some(group) => parent = group["parentId"].as_str().unwrap().to_owned(),
+                None => {
+                    groups[index]["parentId"] = json!("");
+                    break;
+                }
+            }
+        }
+    }
     let mut connections = Vec::new();
     if let Some(input) = value["connections"].as_array() {
         for entry in input.iter().take(100) {
@@ -88,105 +126,143 @@ pub fn sanitize(value: &Value) -> Value {
         }
     }
     let mut tabs = Vec::new();
-    if let Some(input) = value["tabs"].as_array() {
-        for tab in input.iter().take(100) {
-            if !tab.is_object() {
-                continue;
-            }
-            let mut clean = json!({});
-            for name in [
-                "logPath",
-                "logTitle",
-                "host",
-                "user",
-                "key",
-                "filterText",
-                "searchText",
-                "trapText",
-            ] {
-                clean[name] = json!(
-                    tab[name]
-                        .as_str()
-                        .unwrap_or_default()
-                        .chars()
-                        .take(8192)
-                        .collect::<String>()
+    let mut bookmarks = Vec::new();
+    for collection in ["tabs", "bookmarks"] {
+        if let Some(input) = value[collection].as_array() {
+            for tab in input.iter().take(100) {
+                if !tab.is_object() {
+                    continue;
+                }
+                let mut clean = json!({});
+                for name in [
+                    "logPath",
+                    "logTitle",
+                    "host",
+                    "user",
+                    "key",
+                    "filterText",
+                    "searchText",
+                    "trapText",
+                ] {
+                    clean[name] = json!(
+                        tab[name]
+                            .as_str()
+                            .unwrap_or_default()
+                            .chars()
+                            .take(8192)
+                            .collect::<String>()
+                    );
+                }
+                clean["filterNumericJson"] = json!(
+                    crate::numeric::sanitize(
+                        &tab["filterNumericJson"]
+                            .as_str()
+                            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                            .unwrap_or(Value::Null)
+                    )
+                    .to_string()
                 );
-            }
-            clean["runUser"] = json!(tab["runUser"].as_str().unwrap_or("root"));
-            // Old workspaces have no source field: migrate them as file tabs.
-            clean["source"] = json!(tab["source"].as_str().unwrap_or("file"));
-            let encoding = tab["encoding"].as_str().unwrap_or("UTF-8");
-            clean["encoding"] = json!(if crate::encoding::ENCODINGS.contains(&encoding) {
-                encoding
-            } else {
-                "UTF-8"
-            });
-            for name in [
-                "remote",
-                "filterRegex",
-                "filterCase",
-                "filterInvert",
-                "searchRegex",
-                "searchCase",
-                "trapCase",
-            ] {
-                clean[name] = json!(tab[name].as_bool().unwrap_or(false));
-            }
-            clean["follow"] = json!(tab["follow"].as_bool().unwrap_or(true));
-            // An explicitly empty list stays empty; only legacy tabs migrate.
-            clean["trapRulesJson"] = json!(
-                crate::trap::sanitize_rules(
-                    &tab["trapRulesJson"]
-                        .as_str()
-                        .and_then(|s| serde_json::from_str::<Value>(s).ok())
-                        .unwrap_or_else(
-                            || json!([{"text":tab["trapText"], "ignoreCase":tab["trapCase"]}])
-                        )
-                )
-                .to_string()
-            );
-            // Notification state is transient and resets on restoration.
-            clean["unread"] = json!(false);
-            clean["alert"] = json!(false);
-            clean["port"] = bounded_int(&tab["port"], 0, 0, 65535);
-            clean["initial"] = bounded_int(&tab["initial"], 50, 0, 1000000);
-            clean["capacity"] = bounded_int(&tab["capacity"], 512, 1, 10240);
-            clean["elevation"] = bounded_int(&tab["elevation"], 0, 0, 2);
-            let mut id = tab["connectionId"].as_str().unwrap_or_default().to_string();
-            if clean["remote"] == true && id.is_empty() {
-                let existing = connections.iter().find(|c| {
-                    ["host", "user", "port", "key"]
-                        .iter()
-                        .all(|f| c[*f] == clean[*f])
-                });
-                id = if let Some(existing) = existing {
-                    existing["id"].as_str().unwrap().to_string()
+                clean["runUser"] = json!(tab["runUser"].as_str().unwrap_or("root"));
+                // Old workspaces have no source field: migrate them as file tabs.
+                clean["source"] = json!(tab["source"].as_str().unwrap_or("file"));
+                let encoding = tab["encoding"].as_str().unwrap_or("UTF-8");
+                clean["encoding"] = json!(if crate::encoding::ENCODINGS.contains(&encoding) {
+                    encoding
                 } else {
-                    let mut number = connections.len() + 1;
-                    while connections
-                        .iter()
-                        .any(|c| c["id"] == format!("migrated-{number}"))
-                    {
-                        number += 1;
-                    }
-                    let id = format!("migrated-{number}");
-                    connections.push(json!({"id":id,"name":clean["host"],"host":clean["host"],"user":clean["user"],"port":clean["port"],"key":clean["key"]}));
-                    id
-                };
+                    "UTF-8"
+                });
+                for name in [
+                    "remote",
+                    "filterRegex",
+                    "filterCase",
+                    "filterInvert",
+                    "searchRegex",
+                    "searchCase",
+                    "trapCase",
+                ] {
+                    clean[name] = json!(tab[name].as_bool().unwrap_or(false));
+                }
+                clean["follow"] = json!(tab["follow"].as_bool().unwrap_or(true));
+                // An explicitly empty list stays empty; only legacy tabs migrate.
+                clean["trapRulesJson"] = json!(
+                    crate::trap::sanitize_rules(
+                        &tab["trapRulesJson"]
+                            .as_str()
+                            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                            .unwrap_or_else(
+                                || json!([{"text":tab["trapText"], "ignoreCase":tab["trapCase"]}])
+                            )
+                    )
+                    .to_string()
+                );
+                // Notification state is transient and resets on restoration.
+                clean["unread"] = json!(false);
+                clean["alert"] = json!(false);
+                clean["port"] = bounded_int(&tab["port"], 0, 0, 65535);
+                clean["initial"] = bounded_int(&tab["initial"], 50, 0, 1000000);
+                clean["capacity"] = bounded_int(&tab["capacity"], 512, 1, 10240);
+                clean["elevation"] = bounded_int(&tab["elevation"], 0, 0, 2);
+                let mut id = tab["connectionId"].as_str().unwrap_or_default().to_string();
+                if clean["remote"] == true && id.is_empty() {
+                    let existing = connections.iter().find(|c| {
+                        ["host", "user", "port", "key"]
+                            .iter()
+                            .all(|f| c[*f] == clean[*f])
+                    });
+                    id = if let Some(existing) = existing {
+                        existing["id"].as_str().unwrap().to_string()
+                    } else {
+                        let mut number = connections.len() + 1;
+                        while connections
+                            .iter()
+                            .any(|c| c["id"] == format!("migrated-{number}"))
+                        {
+                            number += 1;
+                        }
+                        let id = format!("migrated-{number}");
+                        connections.push(json!({"id":id,"name":clean["host"],"host":clean["host"],"user":clean["user"],"port":clean["port"],"key":clean["key"]}));
+                        id
+                    };
+                }
+                clean["connectionId"] = json!(id);
+                for field in ["host", "user", "port", "key"] {
+                    clean.as_object_mut().unwrap().remove(field);
+                }
+                if collection == "bookmarks" {
+                    let group_id = tab["groupId"].as_str().unwrap_or_default();
+                    clean["groupId"] = json!(if groups.iter().any(|g| g["id"] == group_id) {
+                        group_id
+                    } else {
+                        ""
+                    });
+                    clean["bookmarkTitle"] = json!(
+                        tab["bookmarkTitle"]
+                            .as_str()
+                            .filter(|title| !title.trim().is_empty())
+                            .unwrap_or_else(|| {
+                                if clean["logTitle"].as_str().unwrap().is_empty() {
+                                    clean["logPath"].as_str().unwrap()
+                                } else {
+                                    clean["logTitle"].as_str().unwrap()
+                                }
+                            })
+                            .chars()
+                            .take(8192)
+                            .collect::<String>()
+                    );
+                    bookmarks.push(clean);
+                } else {
+                    tabs.push(clean);
+                }
             }
-            clean["connectionId"] = json!(id);
-            for field in ["host", "user", "port", "key"] {
-                clean.as_object_mut().unwrap().remove(field);
-            }
-            tabs.push(clean);
         }
     }
     let language = value["language"].as_str().unwrap_or_default();
-    json!({"version": 2, "language": if crate::i18n::LANGUAGES.contains(&language) { language } else { "" }, "connections":connections, "initialLines": bounded_int(&value["initialLines"], 50, 0, 1000000),
+    let appearance = value["appearance"].as_str().unwrap_or("auto");
+    json!({"version": 2, "appearance": if ["auto", "light", "dark"].contains(&appearance) { appearance } else { "auto" }, "language": if crate::i18n::LANGUAGES.contains(&language) { language } else { "" }, "connections":connections, "initialLines": bounded_int(&value["initialLines"], 50, 0, 1000000),
         "capacityMiB": bounded_int(&value["capacityMiB"], 512, 1, 10240),
         "currentIndex": bounded_int(&value["currentIndex"], 0, 0, tabs.len().saturating_sub(1) as u64),
-        "width": bounded_int(&value["width"], 1100, 640, 4096), "height": bounded_int(&value["height"], 720, 480, 2160), "tabs": tabs})
+        "width": bounded_int(&value["width"], 1100, 640, 4096), "height": bounded_int(&value["height"], 720, 480, 2160), "tabs": tabs, "bookmarks": bookmarks, "bookmarkGroups":groups})
 }
 
 fn save_file(path: &Path, value: &Value) -> io::Result<()> {
@@ -309,6 +385,35 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn numeric_and_background_settings_round_trip_in_tabs_and_bookmarks() {
+        let condition = json!({"capture":1,"operator":">","value":"100"});
+        let tab = json!({"filterText":r".* (\d+)$", "filterRegex":true,"filterNumericJson":condition.to_string(),
+            "trapRulesJson":json!([{"text":r".* (\d+)$","regex":true,"numeric":condition,
+                "background":true,"opacity":25,"scope":"capture","color":"#ffff00"}]).to_string()});
+        let clean = sanitize(&json!({"tabs":[tab.clone()],"bookmarks":[tab]}));
+        for collection in ["tabs", "bookmarks"] {
+            assert_eq!(
+                serde_json::from_str::<Value>(
+                    clean[collection][0]["filterNumericJson"].as_str().unwrap()
+                )
+                .unwrap(),
+                condition
+            );
+            let rules: Value =
+                serde_json::from_str(clean[collection][0]["trapRulesJson"].as_str().unwrap())
+                    .unwrap();
+            assert_eq!(rules[0]["numeric"], condition);
+            assert_eq!(rules[0]["background"], true);
+            assert_eq!(rules[0]["opacity"], 25);
+            assert_eq!(rules[0]["scope"], "capture");
+        }
+        assert_eq!(sanitize(&clean), clean);
+        assert_eq!(
+            sanitize(&json!({"tabs":[{}]}))["tabs"][0]["filterNumericJson"],
+            "null"
+        );
+    }
     #[test]
     fn trap_tags_migrate_round_trip_and_are_bounded() {
         let clean = sanitize(&json!({"tabs":[{"trapText":"ERROR","trapCase":true},
@@ -473,5 +578,138 @@ mod tests {
         assert_eq!(value["tabs"][0]["source"], "docker");
         assert_eq!(value["tabs"][0]["logPath"], "web-1");
         assert_eq!(value["tabs"][1]["source"], "file");
+    }
+
+    #[test]
+    fn bookmarks_survive_closed_tabs_and_exclude_secrets() {
+        let input = json!({"tabs": [], "bookmarks": [{
+            "logPath": "web", "logTitle": "Production", "source": "docker",
+            "remote": true, "host": "server", "encoding": "CP932",
+            "elevation": 2, "runUser": "app", "initial": 100,
+            "capacity": 64, "filterText": "ERROR", "filterRegex": true,
+            "searchText": "timeout", "follow": false, "unread": true,
+            "alert": true, "password": "secret-password", "token": "secret-token",
+            "trapRulesJson": "[{\"text\":\"ERROR\",\"color\":\"#35c66b\"}]"
+        }]});
+        let clean = sanitize(&input);
+        assert_eq!(clean["tabs"], json!([]));
+        let bookmark = &clean["bookmarks"][0];
+        for field in [
+            "logPath",
+            "logTitle",
+            "source",
+            "remote",
+            "encoding",
+            "elevation",
+            "runUser",
+            "initial",
+            "capacity",
+            "filterText",
+            "filterRegex",
+            "searchText",
+            "follow",
+        ] {
+            assert_eq!(bookmark[field], input["bookmarks"][0][field]);
+        }
+        assert_eq!(bookmark["unread"], false);
+        assert_eq!(bookmark["alert"], false);
+        assert_eq!(clean["connections"][0]["host"], "server");
+        assert_eq!(bookmark["connectionId"], clean["connections"][0]["id"]);
+        assert!(!clean.to_string().contains("secret-"));
+        assert_eq!(sanitize(&clean), clean);
+        let dir = std::env::temp_dir().join(format!("tailer-bookmarks-{}", std::process::id()));
+        let path = dir.join("workspace.json");
+        save_file(&path, &input).unwrap();
+        let restored: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(sanitize(&restored), clean);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn bookmarks_default_empty_and_are_bounded() {
+        assert_eq!(sanitize(&json!({}))["bookmarks"], json!([]));
+        let clean = sanitize(&json!({"bookmarks": vec![json!({"logPath":"/tmp/log"}); 101]}));
+        assert_eq!(clean["bookmarks"].as_array().unwrap().len(), 100);
+        assert_eq!(
+            sanitize(&json!({"bookmarks":[null, false, "invalid"]}))["bookmarks"],
+            json!([])
+        );
+    }
+
+    #[test]
+    fn appearance_round_trips_and_defaults_to_auto() {
+        for appearance in ["auto", "light", "dark"] {
+            let clean = sanitize(&json!({"appearance": appearance}));
+            assert_eq!(clean["appearance"], appearance);
+            assert_eq!(sanitize(&clean), clean);
+        }
+        for input in [
+            json!({}),
+            json!({"appearance":"invalid"}),
+            json!({"appearance":null}),
+            json!({"appearance":1}),
+        ] {
+            assert_eq!(sanitize(&input)["appearance"], "auto");
+        }
+    }
+
+    #[test]
+    fn bookmark_titles_are_independent_and_legacy_titles_migrate() {
+        let clean = sanitize(
+            &json!({"tabs":[{"logTitle":"Tab", "bookmarkTitle":"ignored"}], "bookmarks":[
+                {"logTitle":"Original", "bookmarkTitle":"本番ログ / Custom"},
+                {"logTitle":"Legacy", "logPath":"/tmp/log"},
+                {"logPath":"/tmp/fallback", "bookmarkTitle":"  "},
+                {"bookmarkTitle":"x".repeat(9000)}
+            ]}),
+        );
+        assert_eq!(clean["bookmarks"][0]["bookmarkTitle"], "本番ログ / Custom");
+        assert_eq!(clean["bookmarks"][0]["logTitle"], "Original");
+        assert_eq!(clean["bookmarks"][1]["bookmarkTitle"], "Legacy");
+        assert_eq!(clean["bookmarks"][2]["bookmarkTitle"], "/tmp/fallback");
+        assert_eq!(
+            clean["bookmarks"][3]["bookmarkTitle"]
+                .as_str()
+                .unwrap()
+                .len(),
+            8192
+        );
+        assert!(clean["tabs"][0].get("bookmarkTitle").is_none());
+        assert_eq!(sanitize(&clean), clean);
+    }
+
+    #[test]
+    fn bookmark_groups_round_trip_and_invalid_trees_are_repaired() {
+        let clean = sanitize(&json!({"bookmarkGroups":[
+            {"id":"prod", "name":"Production", "expanded":false},
+            {"id":"web", "name":"Web", "parentId":"prod"},
+            {"id":"orphan", "name":"Orphan", "parentId":"missing"},
+            {"id":"self", "name":"Self", "parentId":"self"},
+            {"id":"a", "name":"A", "parentId":"b"},
+            {"id":"b", "name":"B", "parentId":"a"},
+            {"id":"prod", "name":"Duplicate"}, {"id":"blank", "name":" "}
+        ], "bookmarks":[{"groupId":"web"}, {"groupId":"missing"}, {}]}));
+        assert_eq!(clean["bookmarkGroups"].as_array().unwrap().len(), 6);
+        assert_eq!(clean["bookmarkGroups"][0]["expanded"], false);
+        assert_eq!(clean["bookmarkGroups"][1]["parentId"], "prod");
+        for i in [2, 3, 4] {
+            assert_eq!(clean["bookmarkGroups"][i]["parentId"], "");
+        }
+        assert_eq!(clean["bookmarks"][0]["groupId"], "web");
+        for i in [1, 2] {
+            assert_eq!(clean["bookmarks"][i]["groupId"], "");
+        }
+        assert_eq!(sanitize(&clean), clean);
+        assert_eq!(sanitize(&json!({}))["bookmarkGroups"], json!([]));
+        let groups: Vec<Value> = (0..101)
+            .map(|i| json!({"id":i.to_string(),"name":"Group"}))
+            .collect();
+        assert_eq!(
+            sanitize(&json!({"bookmarkGroups":groups}))["bookmarkGroups"]
+                .as_array()
+                .unwrap()
+                .len(),
+            100
+        );
     }
 }

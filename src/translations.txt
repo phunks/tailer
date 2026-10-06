@@ -1,4 +1,50 @@
 # English|Japanese|Simplified Chinese|Traditional Chinese|Korean
+Numeric condition|数値条件|数值条件|數值條件|숫자 조건
+Capture group|キャプチャ番号|捕获组|擷取群組|캡처 그룹
+Comparison value|比較する値|比较值|比較值|비교 값
+Background highlight|背景色で強調|背景高亮|背景醒目提示|배경 강조
+Opacity (%)|不透明度 (%)|不透明度 (%)|不透明度 (%)|불투명도 (%)
+Highlight scope|強調範囲|高亮范围|醒目提示範圍|강조 범위
+Regex match|一致部分|匹配部分|符合部分|일치 부분
+Captured number|キャプチャ部分|捕获部分|擷取部分|캡처 부분
+Entire line|行全体|整行|整行|전체 줄
+Numeric conditions require Regex.|数値条件には正規表現が必要です。|数值条件需要正则表达式。|數值條件需要正規表示式。|숫자 조건에는 정규식이 필요합니다.
+The selected capture group does not exist.|指定したキャプチャ番号が存在しません。|指定的捕获组不存在。|指定的擷取群組不存在。|선택한 캡처 그룹이 없습니다.
+Invalid numeric comparison operator.|数値比較演算子が不正です。|数值比较运算符无效。|數值比較運算子無效。|숫자 비교 연산자가 잘못되었습니다.
+Enter a finite number to compare.|比較する有限の数値を入力してください。|请输入有限的比较数值。|請輸入有限的比較數值。|비교할 유한한 숫자를 입력하세요.
+Invalid highlight scope.|強調範囲が不正です。|高亮范围无效。|醒目提示範圍無效。|강조 범위가 잘못되었습니다.
+Close other tabs|他のタブを閉じる|关闭其他标签页|關閉其他分頁|다른 탭 닫기
+Close all tabs|すべてのタブを閉じる|关闭所有标签页|關閉所有分頁|모든 탭 닫기
+Close other tabs?|他のタブを閉じますか？|关闭其他标签页？|關閉其他分頁？|다른 탭을 닫을까요?
+Close all tabs?|すべてのタブを閉じますか？|关闭所有标签页？|關閉所有分頁？|모든 탭을 닫을까요?
+Unclassified|未分類|未分类|未分類|미분류
+Group|グループ|分组|群組|그룹
+Create group|グループを作成|创建分组|建立群組|그룹 만들기
+Create subgroup|子グループを作成|创建子分组|建立子群組|하위 그룹 만들기
+Rename group|グループ名を変更|重命名分组|重新命名群組|그룹 이름 변경
+Group name (required)|グループ名（必須）|分组名称（必填）|群組名稱（必填）|그룹 이름 (필수)
+Open all logs|配下をすべて開く|打开所有日志|開啟所有日誌|모든 로그 열기
+Run bookmarked commands?|登録したコマンドを実行しますか？|运行书签中的命令？|執行書籤中的命令？|북마크 명령을 실행할까요?
+This group contains custom commands. Opening all bookmarks runs these commands again.|このグループにはカスタムコマンドが含まれます。一括で開くとコマンドが再実行されます。|此分组包含自定义命令。打开全部书签会再次运行这些命令。|此群組包含自訂命令。開啟全部書籤會再次執行這些命令。|이 그룹에는 사용자 지정 명령이 포함되어 있습니다. 모든 북마크를 열면 명령이 다시 실행됩니다.
+Double-click a group to open all its logs. Use the arrow to expand or collapse.|グループのダブルクリックで配下をすべて開きます。矢印で展開／折りたたみできます。|双击分组打开所有日志。点击箭头展开或折叠。|按兩下群組開啟所有日誌。使用箭頭展開或摺疊。|그룹을 두 번 클릭하면 모든 로그를 엽니다. 화살표로 펼치거나 접을 수 있습니다.
+Appearance|外観|外观|外觀|외관
+Auto (system)|Auto（OSに合わせる）|自动（跟随系统）|自動（跟隨系統）|자동 (시스템 설정)
+Light|Light（ライト）|浅色|淺色|라이트
+Dark|Dark（ダーク）|深色|深色|다크
+Bookmarks|ブックマーク|书签|書籤|북마크
+Bookmark registered.|ブックマークを登録しました。|书签已添加。|書籤已加入。|북마크를 등록했습니다.
+This configuration is already bookmarked.|この設定は登録済みです。|此配置已添加书签。|此設定已加入書籤。|이 설정은 이미 북마크에 등록되어 있습니다.
+Edit bookmark|ブックマークを編集|编辑书签|編輯書籤|북마크 편집
+Bookmark title (required)|ブックマークのタイトル（必須）|书签标题（必填）|書籤標題（必填）|북마크 제목 (필수)
+Changes affect this bookmark only, not existing tabs.|変更はこのブックマークのみに反映されます。既存のタブは変更しません。|更改仅影响此书签，不影响现有标签页。|變更僅影響此書籤，不影響現有分頁。|변경 사항은 이 북마크에만 적용되며 기존 탭에는 영향을 주지 않습니다.
+Double-click to open. Right-click to edit or delete.|ダブルクリックで開く・右クリックで編集／削除できます。|双击打开，右键单击可编辑或删除。|按兩下開啟，按右鍵可編輯或刪除。|두 번 클릭하여 열고 마우스 오른쪽 버튼으로 클릭하여 편집하거나 삭제할 수 있습니다.
+Bookmarks…|ブックマーク…|书签…|書籤…|북마크…
+Register bookmark|ブックマークに登録|添加书签|加入書籤|북마크 등록
+Open bookmark|ブックマークを開く|打开书签|開啟書籤|북마크 열기
+Right-click a log tab to register a bookmark.|ログタブを右クリックしてブックマークに登録できます。|右键单击日志标签页可添加书签。|在日誌分頁按右鍵即可加入書籤。|로그 탭을 마우스 오른쪽 버튼으로 클릭하여 북마크를 등록할 수 있습니다.
+Opening a bookmark starts new log collection. Commands run again. Existing archives are kept.|保存した設定でログ取得を再開します。コマンドは再実行されます。以前の保存ログは残ります。|打开书签会开始新的日志收集。命令将再次运行。现有存档会保留。|開啟書籤會開始新的日誌收集。命令將再次執行。現有封存會保留。|북마크를 열면 새 로그 수집을 시작합니다. 명령은 다시 실행됩니다. 기존 로그는 유지됩니다.
+Up to 100 bookmarks can be saved.|ブックマークは100件まで登録できます。|最多可保存100个书签。|最多可儲存100個書籤。|북마크는 최대 100개까지 저장할 수 있습니다.
+Changes apply on the next connection. Connections used by tabs or bookmarks cannot be deleted.|編集内容は次回接続から反映されます。タブやブックマークで利用中の接続先は削除できません。|更改将在下次连接时生效。标签页或书签使用的连接无法删除。|變更將於下次連線時生效。分頁或書籤使用的連線無法刪除。|변경 사항은 다음 연결부터 적용됩니다. 탭이나 북마크에서 사용하는 연결은 삭제할 수 없습니다.
 Options|オプション|选项|選項|옵션
 Close log tab?|ログタブを閉じますか？|关闭日志标签页？|關閉日誌分頁？|로그 탭을 닫을까요?
 Closing stops log collection. Saved archives are kept.|閉じるとログ取得を停止します。保存済みログは残ります。|关闭会停止日志收集。已保存的存档会保留。|關閉會停止日誌收集。已儲存的封存會保留。|닫으면 로그 수집이 중지됩니다. 저장된 로그는 유지됩니다.

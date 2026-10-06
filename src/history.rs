@@ -14,6 +14,7 @@ pub struct Pattern {
     pub regex: bool,
     pub ignore_case: bool,
     pub invert: bool,
+    pub numeric: serde_json::Value,
 }
 
 #[derive(Clone, Default)]
@@ -94,6 +95,10 @@ pub fn scan(
     expected: u64,
 ) -> Result<Matches, String> {
     let matcher = compile(pattern)?;
+    let numeric = crate::numeric::Condition::compile(
+        &pattern.numeric,
+        if pattern.regex { Some(&matcher) } else { None },
+    )?;
     let file = File::open(path).map_err(|error| error.to_string())?;
     let mut matches = Matches::default();
     let mut bytes = 0;
@@ -106,7 +111,13 @@ pub fn scan(
             ));
         }
         number += 1;
-        if matcher.is_match(&line) != pattern.invert {
+        let matched = match &numeric {
+            Some(condition) => matcher
+                .captures_iter(&line)
+                .any(|captures| condition.matches(&captures)),
+            None => matcher.is_match(&line),
+        };
+        if matched != pattern.invert {
             matches.count += 1;
             bytes += line.len();
             matches.lines.push_back((number, line));
@@ -279,6 +290,32 @@ mod tests {
             })
             .is_ok()
         );
+    }
+
+    #[test]
+    fn numeric_filters_scan_all_history_and_support_inversion() {
+        let fixture = Fixture::new(
+            "xxxxxx 200 8 128\nxxxxxx 200 8 100\nxxxxxx 200 8 -1.5\nxxxxxx 200 8 bad\n",
+        );
+        let pattern = Pattern {
+            text: r".* (\S+)$".into(),
+            regex: true,
+            numeric: serde_json::json!({"capture":1,"operator":">","value":"100"}),
+            ..Pattern::default()
+        };
+        let matched = fixture.scan(pattern.clone());
+        assert_eq!(matched.count, 1);
+        assert_eq!(matched.lines[0].0, 1);
+        let inverted = fixture.scan(Pattern {
+            invert: true,
+            ..pattern.clone()
+        });
+        assert_eq!(inverted.count, 3);
+        let fractional = fixture.scan(Pattern {
+            numeric: serde_json::json!({"capture":1,"operator":"<","value":"0"}),
+            ..pattern
+        });
+        assert_eq!(fractional.lines[0].0, 3);
     }
     #[test]
     fn decoder_handles_split_unicode_and_long_lines() {

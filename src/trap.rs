@@ -13,6 +13,9 @@ pub struct Rule {
     pub regex: bool,
     pub ignore_case: bool,
     pub color: String,
+    pub background: bool,
+    pub opacity: u32,
+    pub scope: String,
 }
 
 pub fn valid_color(color: &str) -> bool {
@@ -40,10 +43,25 @@ pub fn sanitize_rules(value: &Value) -> Value {
                     .as_str()
                     .filter(|s| valid_color(s))
                     .unwrap_or(DEFAULT_COLOR);
-                Some(
-                    json!({"text":text, "regex":v["regex"].as_bool().unwrap_or(false),
-                "ignoreCase":v["ignoreCase"].as_bool().unwrap_or(false), "color":color}),
-                )
+                let mut clean = json!({"text":text, "regex":v["regex"].as_bool().unwrap_or(false),
+                    "ignoreCase":v["ignoreCase"].as_bool().unwrap_or(false), "color":color});
+                if !v["numeric"].is_null() {
+                    clean["numeric"] = crate::numeric::sanitize(&v["numeric"]);
+                }
+                if v["background"].as_bool().unwrap_or(false) {
+                    clean["background"] = json!(true);
+                }
+                if !v["opacity"].is_null() {
+                    clean["opacity"] =
+                        json!(v["opacity"].as_f64().unwrap_or(25.0).clamp(0.0, 100.0) as u32);
+                }
+                if let Some(scope) = v["scope"]
+                    .as_str()
+                    .filter(|s| ["capture", "match", "line"].contains(s))
+                {
+                    clean["scope"] = json!(scope);
+                }
+                Some(clean)
             })
             .take(MAX_RULES)
             .collect::<Vec<_>>()
@@ -54,10 +72,53 @@ pub fn sanitize_rules(value: &Value) -> Value {
 pub struct CompiledRule {
     pub rule: Rule,
     expression: Option<Regex>,
+    numeric: Option<crate::numeric::Condition>,
 }
 
 impl CompiledRule {
     fn ranges(&self, text: &str) -> Vec<Range<usize>> {
+        if self.numeric.is_some() || self.rule.scope == "line" || self.rule.scope == "capture" {
+            let mut result = Vec::new();
+            let mut offset = 0;
+            for line in text.split_inclusive('\n') {
+                let content = line.trim_end_matches(['\r', '\n']);
+                if let Some(expression) = &self.expression {
+                    for captures in expression.captures_iter(content) {
+                        if self
+                            .numeric
+                            .as_ref()
+                            .is_some_and(|condition| !condition.matches(&captures))
+                        {
+                            continue;
+                        }
+                        let Some(matched) = captures.get(if self.rule.scope == "capture" {
+                            self.numeric.as_ref().map_or(1, |n| n.capture)
+                        } else {
+                            0
+                        }) else {
+                            continue;
+                        };
+                        let range = if self.rule.scope == "line" {
+                            offset..offset + content.len()
+                        } else {
+                            offset + matched.start()..offset + matched.end()
+                        };
+                        if !range.is_empty() {
+                            result.push(range);
+                        }
+                        if self.rule.scope == "line" {
+                            break;
+                        }
+                    }
+                } else if !ranges(content, &self.rule.text, self.rule.ignore_case).is_empty() {
+                    if !content.is_empty() {
+                        result.push(offset..offset + content.len());
+                    }
+                }
+                offset += line.len();
+            }
+            return result;
+        }
         match &self.expression {
             Some(expression) => expression
                 .find_iter(text)
@@ -92,6 +153,9 @@ pub fn compile_rules(value: &Value) -> Result<Vec<CompiledRule>, String> {
             regex: entry["regex"].as_bool().unwrap_or(false),
             ignore_case: entry["ignoreCase"].as_bool().unwrap_or(false),
             color: color.into(),
+            background: entry["background"].as_bool().unwrap_or(false),
+            opacity: entry["opacity"].as_f64().unwrap_or(25.0).clamp(0.0, 100.0) as u32,
+            scope: entry["scope"].as_str().unwrap_or("match").into(),
         };
         let expression = if rule.regex {
             Some(
@@ -103,7 +167,22 @@ pub fn compile_rules(value: &Value) -> Result<Vec<CompiledRule>, String> {
         } else {
             None
         };
-        compiled.push(CompiledRule { rule, expression });
+        let numeric = crate::numeric::Condition::compile(&entry["numeric"], expression.as_ref())?;
+        if !["capture", "match", "line"].contains(&rule.scope.as_str()) {
+            return Err("Invalid highlight scope.".into());
+        }
+        if rule.scope == "capture"
+            && expression
+                .as_ref()
+                .is_none_or(|r| r.captures_len() <= numeric.as_ref().map_or(1, |n| n.capture))
+        {
+            return Err("The selected capture group does not exist.".into());
+        }
+        compiled.push(CompiledRule {
+            rule,
+            expression,
+            numeric,
+        });
     }
     Ok(compiled)
 }
@@ -179,9 +258,18 @@ impl Trap {
         let decoded = String::from_utf8_lossy(&self.carry[..complete]);
         let old = String::from_utf8_lossy(&self.carry[..previous.min(complete)]).len();
         for (rule, seen) in self.rules.iter().zip(&mut self.seen) {
-            for range in rule.ranges(&decoded) {
+            // Numeric conditions are evaluated only on complete lines: a partial "12"
+            // may grow into "128", changing both the numeric value and an end anchor.
+            let input = if rule.numeric.is_some() {
+                &decoded[..decoded.rfind('\n').map_or(0, |i| i + 1)]
+            } else {
+                &decoded
+            };
+            for range in rule.ranges(input) {
                 // A growing greedy regex match must not alert again at the same start.
-                if range.end > old && seen.insert(self.base + range.start) {
+                if (rule.numeric.is_some() || range.end > old)
+                    && seen.insert(self.base + range.start)
+                {
                     self.hits += 1;
                 }
             }
@@ -222,8 +310,20 @@ pub fn highlight(text: &str, needle: &str, ignore_case: bool) -> String {
 }
 
 pub fn highlight_rules(text: &str, rules: &[CompiledRule]) -> String {
+    // Qt Quick can carry a translucent character background over a literal
+    // newline in <pre>, painting the following row twice. Explicit line breaks
+    // preserve the same plain text and line metrics without that format bleed.
+    let explicit_breaks = rules.iter().any(|compiled| compiled.rule.background);
+    let escaped = |text: &str| {
+        let html = escape(text);
+        if explicit_breaks {
+            html.replace('\n', "<br/>")
+        } else {
+            html
+        }
+    };
     // Earlier tags win overlapping ranges. Keep non-overlapping parts of later tags.
-    let mut spans: Vec<(Range<usize>, &str)> = Vec::new();
+    let mut spans: Vec<(Range<usize>, &Rule)> = Vec::new();
     for compiled in rules {
         let mut additions = Vec::new();
         for range in compiled.ranges(text) {
@@ -234,7 +334,7 @@ pub fn highlight_rules(text: &str, rules: &[CompiledRule]) -> String {
                     break;
                 }
                 if start < taken.start {
-                    additions.push((start..taken.start, compiled.rule.color.as_str()));
+                    additions.push((start..taken.start, &compiled.rule));
                 }
                 start = start.max(taken.end);
                 if start >= range.end {
@@ -242,7 +342,7 @@ pub fn highlight_rules(text: &str, rules: &[CompiledRule]) -> String {
                 }
             }
             if start < range.end {
-                additions.push((start..range.end, compiled.rule.color.as_str()));
+                additions.push((start..range.end, &compiled.rule));
             }
         }
         spans.extend(additions);
@@ -251,17 +351,28 @@ pub fn highlight_rules(text: &str, rules: &[CompiledRule]) -> String {
     spans.sort_by_key(|(range, _)| range.start);
     let mut output = String::from("<pre>");
     let mut previous = 0;
-    for (range, color) in spans {
+    for (range, rule) in spans {
         if range.start < previous {
             continue;
         }
-        output.push_str(&escape(&text[previous..range.start]));
-        output.push_str(&format!("<span style=\"color:{color};font-weight:bold\">"));
-        output.push_str(&escape(&text[range.clone()]));
+        output.push_str(&escaped(&text[previous..range.start]));
+        if rule.background {
+            let alpha = (rule.opacity * 255 + 50) / 100;
+            output.push_str(&format!(
+                "<span style=\"background-color:#{alpha:02x}{}\">",
+                &rule.color[1..]
+            ));
+        } else {
+            output.push_str(&format!(
+                "<span style=\"color:{};font-weight:bold\">",
+                rule.color
+            ));
+        }
+        output.push_str(&escaped(&text[range.clone()]));
         output.push_str("</span>");
         previous = range.end;
     }
-    output.push_str(&escape(&text[previous..]));
+    output.push_str(&escaped(&text[previous..]));
     output.push_str("</pre>");
     output
 }
@@ -282,6 +393,40 @@ pub fn context_position(text: &str, selected: Option<usize>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn numeric_traps_wait_for_newlines_and_highlight_scopes() {
+        let rule = json!({"text":r".* (\d+)$", "regex":true,
+            "numeric":{"capture":1,"operator":">","value":"100"},
+            "background":true,"color":"#ff0000","opacity":25,"scope":"capture"});
+        let compiled = compile_rules(&json!([rule.clone()])).unwrap();
+        let mut trap = Trap::default();
+        trap.configure_rules(compiled.clone());
+        trap.receive(b"xxxxxx 200 8 1");
+        trap.receive(b"28");
+        assert_eq!(trap.hits, 0);
+        trap.receive(b"\nxxxxxx 200 8 100\n");
+        assert_eq!(trap.hits, 1);
+        trap.receive(b"xxxxxx 200 8 129\n");
+        assert_eq!(trap.hits, 2);
+        assert_eq!(
+            highlight_rules("xxxxxx 200 8 128\nxxxxxx 200 8 100\n", &compiled),
+            "<pre>xxxxxx 200 8 <span style=\"background-color:#40ff0000\">128</span><br/>xxxxxx 200 8 100<br/></pre>"
+        );
+        for scope in ["match", "line"] {
+            let mut rule = rule.clone();
+            rule["scope"] = json!(scope);
+            assert_eq!(
+                highlight_rules(
+                    "xxxxxx 200 8 128\n",
+                    &compile_rules(&json!([rule])).unwrap()
+                ),
+                "<pre><span style=\"background-color:#40ff0000\">xxxxxx 200 8 128</span><br/></pre>"
+            );
+        }
+        let clean = sanitize_rules(&json!([rule]));
+        assert_eq!(sanitize_rules(&clean), clean);
+        assert!(compile_rules(&json!([{"text":"x", "numeric":{"value":"100"}}])).is_err());
+    }
     #[test]
     fn multiple_rules_regex_fragments_and_growing_matches() {
         let rules = compile_rules(&json!([

@@ -9,6 +9,7 @@ mod elevation;
 mod encoding;
 mod history;
 mod i18n;
+mod numeric;
 mod session;
 mod source;
 mod ssh;
@@ -440,6 +441,21 @@ impl LogBackend {
     }
 
     #[qslot]
+    fn set_numeric_filter(
+        &mut self,
+        text: String,
+        regex: bool,
+        ignore_case: bool,
+        invert: bool,
+        condition: Value,
+    ) {
+        self.query.filter = session::pattern(text, regex, ignore_case, invert);
+        self.query.filter.numeric = condition;
+        self.query.context = None;
+        self.submit();
+    }
+
+    #[qslot]
     fn search(&mut self, text: String, regex: bool, ignore_case: bool) {
         self.query.search = session::pattern(text, regex, ignore_case, false);
         self.query.context = None;
@@ -508,6 +524,31 @@ fn main() {
             &args.iter().any(|arg| arg == "--local-command-test"),
         )
         .set_initial_property("i18nTestLanguage", &QString::from(i18n_test_language))
+        .set_initial_property("tabUiTest", &args.iter().any(|arg| arg == "--tab-ui-test"))
+        .set_initial_property(
+            "numericTest",
+            &args.iter().any(|arg| arg == "--numeric-test"),
+        )
+        .set_initial_property(
+            "themeTestMode",
+            &QString::from(
+                args.iter()
+                    .position(|arg| arg == "--theme-test")
+                    .and_then(|index| args.get(index + 1))
+                    .map(String::as_str)
+                    .unwrap_or(""),
+            ),
+        )
+        .set_initial_property(
+            "bookmarkTestMode",
+            &QString::from(
+                args.iter()
+                    .position(|arg| arg == "--bookmark-test")
+                    .and_then(|index| args.get(index + 1))
+                    .map(String::as_str)
+                    .unwrap_or(""),
+            ),
+        )
         .set_initial_property("smokePath", &QString::from(smoke_path.as_str()))
         .set_initial_property(
             "connectionUiTest",

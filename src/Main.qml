@@ -17,6 +17,41 @@ ApplicationWindow {
     property bool connectionUiTest: false
     property string i18nTestLanguage: ""
     property bool localCommandTest: false
+    property string bookmarkTestMode: ""
+    property string themeTestMode: ""
+    property bool tabUiTest: false
+    property bool movingTab: false
+    readonly property bool darkAppearance: settings.appearance === "dark"
+        || (settings.appearance === "auto" && Qt.styleHints.colorScheme === Qt.Dark)
+    // Explicit palettes also support platforms that cannot override the system scheme.
+    palette.window: darkAppearance ? "#252525" : "#efefef"
+    palette.windowText: darkAppearance ? "#eeeeee" : "#202020"
+    palette.base: darkAppearance ? "#1b1b1b" : "#ffffff"
+    palette.alternateBase: darkAppearance ? "#303030" : "#f7f7f7"
+    palette.text: darkAppearance ? "#eeeeee" : "#202020"
+    palette.button: darkAppearance ? "#353535" : "#e5e5e5"
+    palette.buttonText: darkAppearance ? "#eeeeee" : "#202020"
+    palette.highlight: darkAppearance ? "#3d8edb" : "#0078d4"
+    palette.highlightedText: "#ffffff"
+    palette.toolTipBase: darkAppearance ? "#353535" : "#ffffdc"
+    palette.toolTipText: darkAppearance ? "#eeeeee" : "#202020"
+    palette.placeholderText: darkAppearance ? "#aaaaaa" : "#707070"
+    palette.light: darkAppearance ? "#555555" : "#ffffff"
+    palette.midlight: darkAppearance ? "#454545" : "#f4f4f4"
+    palette.mid: darkAppearance ? "#606060" : "#b8b8b8"
+    palette.dark: darkAppearance ? "#181818" : "#808080"
+    palette.shadow: darkAppearance ? "#101010" : "#505050"
+    palette.link: darkAppearance ? "#70b7ff" : "#0066cc"
+    palette.linkVisited: darkAppearance ? "#c49bff" : "#8040a0"
+    palette.brightText: "#ffffff"
+    palette.accent: darkAppearance ? "#3d8edb" : "#0078d4"
+    palette.disabled.text: darkAppearance ? "#808080" : "#909090"
+    palette.disabled.windowText: darkAppearance ? "#808080" : "#909090"
+    palette.disabled.buttonText: darkAppearance ? "#808080" : "#909090"
+    function applyAppearance() {
+        Qt.styleHints.colorScheme = settings.appearance === "dark" ? Qt.Dark
+            : settings.appearance === "light" ? Qt.Light : Qt.Unknown;
+    }
     Translations {
         id: translations
         onChanged: {
@@ -57,6 +92,95 @@ ApplicationWindow {
         onTriggered: connectionManager.poll()
     }
     ListModel { id: connectionProfiles }
+    ListModel { id: bookmarks }
+    ListModel { id: bookmarkGroups }
+    ListModel { id: bookmarkTree }
+    property bool unclassifiedExpanded: true
+    function groupIndex(id) {
+        for (let i = 0; i < bookmarkGroups.count; ++i)
+            if (bookmarkGroups.get(i).id === id) return i;
+        return -1;
+    }
+    function rebuildBookmarkTree() {
+        bookmarkTree.clear();
+        function appendChildren(parentId, depth) {
+            if (depth > 100) return;
+            for (let i = 0; i < bookmarkGroups.count; ++i) {
+                const group = bookmarkGroups.get(i);
+                if (group.parentId !== parentId) continue;
+                bookmarkTree.append({isGroup:true, nodeId:group.id, sourceIndex:i, depth:depth,
+                    bookmarkTitle:group.name, logPath:"", remote:false, connectionId:"", expanded:group.expanded});
+                if (group.expanded) appendChildren(group.id, depth + 1);
+            }
+            if (parentId !== "") appendBookmarks(parentId, depth);
+        }
+        function appendBookmarks(groupId, depth) {
+            for (let i = 0; i < bookmarks.count; ++i) {
+                const row = bookmarks.get(i);
+                if ((row.groupId || "") !== groupId) continue;
+                bookmarkTree.append({isGroup:false, nodeId:"", sourceIndex:i, depth:depth,
+                    bookmarkTitle:row.bookmarkTitle, logPath:row.logPath, remote:row.remote,
+                    connectionId:row.connectionId, expanded:false});
+            }
+        }
+        appendChildren("", 0);
+        bookmarkTree.append({isGroup:true, nodeId:"", sourceIndex:-1, depth:0,
+            bookmarkTitle:root.tr("Unclassified"), logPath:"", remote:false, connectionId:"", expanded:unclassifiedExpanded});
+        if (unclassifiedExpanded) appendBookmarks("", 1);
+    }
+    function toggleBookmarkGroup(id) {
+        const index = groupIndex(id);
+        if (index >= 0) bookmarkGroups.setProperty(index, "expanded", !bookmarkGroups.get(index).expanded);
+        else unclassifiedExpanded = !unclassifiedExpanded;
+        rebuildBookmarkTree();
+        scheduleSave();
+    }
+    function groupContains(ancestor, child) {
+        if (ancestor === "") return child === "";
+        for (let i = 0; i <= bookmarkGroups.count; ++i) {
+            if (child === ancestor) return true;
+            const index = groupIndex(child);
+            if (index < 0) return false;
+            child = bookmarkGroups.get(index).parentId;
+        }
+        return false;
+    }
+    function openBookmarkGroup(id, confirmed = false) {
+        const indices = [];
+        let hasCommand = false;
+        for (let i = 0; i < bookmarks.count; ++i) {
+            const row = bookmarks.get(i);
+            if (!groupContains(id, row.groupId || "")) continue;
+            indices.push(i);
+            if (row.source === "custom") hasCommand = true;
+        }
+        if (indices.length === 0) return;
+        if (hasCommand && !confirmed) {
+            bookmarkGroupConfirm.groupId = id;
+            bookmarkGroupConfirm.open();
+            return;
+        }
+        for (const index of indices) openBookmark(index);
+        bookmarksDialog.close();
+    }
+    function editBookmarkGroup(id, creating = false) {
+        const index = groupIndex(id);
+        groupEditor.groupId = id;
+        groupEditor.creating = creating;
+        groupNameInput.text = creating || index < 0 ? "" : bookmarkGroups.get(index).name;
+        groupEditor.open();
+    }
+    function deleteBookmarkGroup(id) {
+        if (groupIndex(id) < 0) return;
+        for (let i = 0; i < bookmarks.count; ++i)
+            if (groupContains(id, bookmarks.get(i).groupId || "")) bookmarks.setProperty(i, "groupId", "");
+        const removed = [];
+        for (let i = 0; i < bookmarkGroups.count; ++i)
+            if (groupContains(id, bookmarkGroups.get(i).id)) removed.push(i);
+        for (let i = removed.length - 1; i >= 0; --i) bookmarkGroups.remove(removed[i]);
+        rebuildBookmarkTree();
+        saveWorkspace();
+    }
     function profileById(id) {
         for (let i = 0; i < connectionProfiles.count; ++i)
             if (connectionProfiles.get(i).id === id)
@@ -67,6 +191,9 @@ ApplicationWindow {
         for (let i = 0; i < logs.count; ++i)
             if (logs.get(i).connectionId === id)
                 return true;
+        for (let i = 0; i < bookmarks.count; ++i)
+            if (bookmarks.get(i).remote && bookmarks.get(i).connectionId === id)
+                return true;
         return false;
     }
     property bool restoring: true
@@ -75,40 +202,60 @@ ApplicationWindow {
         id: settings
         property int initialLines: 50
         property int capacityMiB: 512
+        property string appearance: "auto"
+        onAppearanceChanged: {
+            root.applyAppearance();
+            root.scheduleSave();
+        }
     }
     function scheduleSave() {
         if (!restoring && smokePath === "")
             saveTimer.restart();
     }
+    function logConfiguration(row) {
+        return {
+            logPath: row.logPath,
+            logTitle: row.logTitle,
+            remote: row.remote,
+            source: row.source,
+            encoding: row.encoding,
+            connectionId: row.connectionId,
+            elevation: row.elevation,
+            runUser: row.runUser,
+            initial: row.initial,
+            capacity: row.capacity,
+            filterText: row.filterText,
+            filterRegex: row.filterRegex,
+            filterCase: row.filterCase,
+            filterInvert: row.filterInvert,
+            filterNumericJson: row.filterNumericJson || "null",
+            searchText: row.searchText,
+            searchRegex: row.searchRegex,
+            searchCase: row.searchCase,
+            follow: row.follow,
+            trapRulesJson: row.trapRulesJson
+        };
+    }
     function saveWorkspace() {
         if (restoring || smokePath !== "")
             return;
         const saved = [];
-        for (let i = 0; i < logs.count; ++i) {
-            const row = logs.get(i);
-            saved.push({
-                logPath: row.logPath,
-                logTitle: row.logTitle,
-                remote: row.remote,
-                source: row.source,
-                encoding: row.encoding,
-                connectionId: row.connectionId,
-                elevation: row.elevation,
-                runUser: row.runUser,
-                initial: row.initial,
-                capacity: row.capacity,
-                filterText: row.filterText,
-                filterRegex: row.filterRegex,
-                filterCase: row.filterCase,
-                filterInvert: row.filterInvert,
-                searchText: row.searchText,
-                searchRegex: row.searchRegex,
-                searchCase: row.searchCase,
-                follow: row.follow,
-                trapRulesJson: row.trapRulesJson
-            });
+        for (let i = 0; i < logs.count; ++i)
+            saved.push(logConfiguration(logs.get(i)));
+        const savedBookmarks = [];
+        for (let i = 0; i < bookmarks.count; ++i) {
+            const row = bookmarks.get(i);
+            const configuration = logConfiguration(row);
+            configuration.bookmarkTitle = row.bookmarkTitle;
+            configuration.groupId = row.groupId || "";
+            savedBookmarks.push(configuration);
         }
         const profiles = [];
+        const groups = [];
+        for (let i = 0; i < bookmarkGroups.count; ++i) {
+            const g = bookmarkGroups.get(i);
+            groups.push({id:g.id, name:g.name, parentId:g.parentId, expanded:g.expanded});
+        }
         for (let i = 0; i < connectionProfiles.count; ++i) {
             const p = connectionProfiles.get(i);
             profiles.push({id: p.id, name: p.name, host: p.host, user: p.user, port: p.port, key: p.key});
@@ -116,8 +263,11 @@ ApplicationWindow {
         workspace.save({
             version: 2,
             language: translations.language,
+            appearance: settings.appearance,
             connections: profiles,
             tabs: saved,
+            bookmarks: savedBookmarks,
+            bookmarkGroups: groups,
             initialLines: settings.initialLines,
             capacityMiB: settings.capacityMiB,
             currentIndex: tabs.currentIndex,
@@ -168,6 +318,7 @@ ApplicationWindow {
             filterRegex: false,
             filterCase: false,
             filterInvert: false,
+            filterNumericJson: "null",
             searchText: "",
             searchRegex: false,
             searchCase: false,
@@ -178,15 +329,57 @@ ApplicationWindow {
     }
 
     function closeTab(index) {
+        if (index < 0 || index >= logs.count) return;
         // qmllint disable missing-property
         const page = pageRepeater.itemAt(index);
         if (page)
             page.backend.stop();
         // qmllint enable missing-property
-        const next = Math.max(0, Math.min(tabs.currentIndex, logs.count - 2));
+        const current = tabs.currentIndex;
+        const next = logs.count === 1 ? -1 : (index < current ? current - 1 : Math.min(current, logs.count - 2));
         logs.remove(index);
         tabs.currentIndex = next;
         scheduleSave();
+    }
+
+    function moveTab(from, to) {
+        if (from < 0 || to < 0 || from >= logs.count || to >= logs.count || from === to) return;
+        const selected = tabs.currentIndex;
+        movingTab = true;
+        logs.move(from, to, 1);
+        if (selected === from) tabs.currentIndex = to;
+        else if (from < selected && to >= selected) tabs.currentIndex = selected - 1;
+        else if (from > selected && to <= selected) tabs.currentIndex = selected + 1;
+        else tabs.currentIndex = selected;
+        movingTab = false;
+        // Repeater moves existing delegates; reconnecting would lose the current archive.
+        for (let i = 0; i < logs.count; ++i) {
+            // qmllint disable missing-property
+            const page = pageRepeater.itemAt(i);
+            const tab = tabRepeater.itemAt(i);
+            if (page && tab) tab.connected = page.backend.connected;
+            // qmllint enable missing-property
+        }
+        scheduleSave();
+    }
+
+    function dropTab(from, sceneX, sceneY) {
+        const point = tabs.mapFromItem(null, sceneX, sceneY);
+        let target = from;
+        for (let i = 0; i < logs.count; ++i) {
+            const tab = tabRepeater.itemAt(i);
+            const position = tab.mapToItem(tabs, 0, 0);
+            if (point.x >= position.x && point.x <= position.x + tab.width) { target = i; break; }
+            if (point.x > position.x + tab.width) target = i;
+            if (i === 0 && point.x < position.x) { target = 0; break; }
+        }
+        moveTab(from, target);
+    }
+
+    function closeTabs(mode, index) {
+        if (mode === "single") { closeTab(index); return; }
+        for (let i = logs.count - 1; i >= 0; --i)
+            if (mode === "all" || i !== index) closeTab(i);
     }
 
     function restartTab(index) {
@@ -200,21 +393,329 @@ ApplicationWindow {
         scheduleSave();
     }
 
+    function registerBookmark(index) {
+        if (index < 0 || index >= logs.count) return;
+        const configuration = logConfiguration(logs.get(index));
+        // Registering an unchanged configuration twice does not create duplicates.
+        const serialized = JSON.stringify(configuration);
+        for (let i = 0; i < bookmarks.count; ++i) {
+            if (JSON.stringify(logConfiguration(bookmarks.get(i))) === serialized) {
+                bookmarkRegisteredDialog.message = root.tr("This configuration is already bookmarked.");
+                bookmarkRegisteredDialog.open();
+                return;
+            }
+        }
+        if (bookmarks.count >= 100) return;
+        configuration.bookmarkTitle = configuration.logTitle || configuration.logPath;
+        configuration.groupId = "";
+        bookmarks.append(configuration);
+        rebuildBookmarkTree();
+        saveWorkspace();
+        bookmarkRegisteredDialog.message = workspace.error || root.tr("Bookmark registered.");
+        bookmarkRegisteredDialog.open();
+    }
+
+    function openBookmark(index) {
+        if (index < 0 || index >= bookmarks.count) return;
+        const configuration = logConfiguration(bookmarks.get(index));
+        if (configuration.remote && !profileById(configuration.connectionId).id) return;
+        configuration.logTitle = bookmarks.get(index).bookmarkTitle;
+        configuration.unread = false;
+        configuration.alert = false;
+        configuration.trapText = "";
+        configuration.trapCase = false;
+        logs.append(configuration);
+        tabs.currentIndex = logs.count - 1;
+        scheduleSave();
+        bookmarksDialog.close();
+    }
+
+    function editBookmark(index) {
+        if (index < 0 || index >= bookmarks.count) return;
+        bookmarkEditor.bookmarkIndex = index;
+        bookmarkTitleInput.text = bookmarks.get(index).bookmarkTitle;
+        bookmarkGroupSelection.currentIndex = Math.max(0, bookmarkGroupSelection.ids.indexOf(bookmarks.get(index).groupId || ""));
+        bookmarkEditor.open();
+    }
+
+    function deleteBookmark(index) {
+        if (index < 0 || index >= bookmarks.count) return;
+        bookmarks.remove(index);
+        rebuildBookmarkTree();
+        saveWorkspace();
+    }
+
+    Dialog {
+        id: bookmarkRegisteredDialog
+        property string message: ""
+        width: Math.min(420, root.width - 40)
+        title: root.tr("Bookmarks")
+        anchors.centerIn: parent
+        modal: true
+        standardButtons: Dialog.Ok
+        onOpened: root.translateButtons(bookmarkRegisteredDialog)
+        Label { width: parent.width; text: bookmarkRegisteredDialog.message; wrapMode: Text.WordWrap }
+    }
+
+    Dialog {
+        id: bookmarkEditor
+        property int bookmarkIndex: -1
+        title: root.tr("Edit bookmark")
+        anchors.centerIn: parent
+        modal: true
+        width: Math.min(480, root.width - 40)
+        standardButtons: Dialog.Save | Dialog.Cancel
+        onOpened: {
+            root.translateButtons(bookmarkEditor);
+            standardButton(Dialog.Save).enabled = Qt.binding(() => bookmarkTitleInput.text.trim() !== "");
+            bookmarkTitleInput.forceActiveFocus();
+            bookmarkTitleInput.selectAll();
+        }
+        onAccepted: {
+            if (bookmarkIndex < 0 || bookmarkIndex >= bookmarks.count || bookmarkTitleInput.text.trim() === "") return;
+            bookmarks.setProperty(bookmarkIndex, "bookmarkTitle", bookmarkTitleInput.text.trim());
+            bookmarks.setProperty(bookmarkIndex, "groupId", bookmarkGroupSelection.ids[bookmarkGroupSelection.currentIndex]);
+            root.rebuildBookmarkTree();
+            root.saveWorkspace();
+        }
+        ColumnLayout {
+            anchors.fill: parent
+            Label { text: root.tr("Bookmark title (required)") }
+            TextField {
+                id: bookmarkTitleInput
+                maximumLength: 8192
+                Layout.fillWidth: true
+                onAccepted: if (text.trim() !== "") bookmarkEditor.accept()
+            }
+            Label {
+                text: root.tr("Changes affect this bookmark only, not existing tabs.")
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+            Label { text: root.tr("Group") }
+            ComboBox {
+                id: bookmarkGroupSelection
+                property var ids: {
+                    const values = [""];
+                    for (let i = 0; i < bookmarkGroups.count; ++i) values.push(bookmarkGroups.get(i).id);
+                    return values;
+                }
+                model: {
+                    const values = [root.tr("Unclassified")];
+                    for (let i = 0; i < bookmarkGroups.count; ++i) {
+                        const group = bookmarkGroups.get(i);
+                        let name = group.name;
+                        let parent = group.parentId;
+                        for (let depth = 0; parent !== "" && depth < 100; ++depth) {
+                            const index = root.groupIndex(parent);
+                            if (index < 0) break;
+                            name = bookmarkGroups.get(index).name + " / " + name;
+                            parent = bookmarkGroups.get(index).parentId;
+                        }
+                        values.push(name);
+                    }
+                    return values;
+                }
+                Layout.fillWidth: true
+            }
+        }
+    }
+
+    Dialog {
+        id: groupEditor
+        property string groupId: ""
+        property bool creating: false
+        title: creating ? root.tr("Create group") : root.tr("Rename group")
+        anchors.centerIn: parent
+        modal: true
+        width: Math.min(420, root.width - 40)
+        standardButtons: Dialog.Save | Dialog.Cancel
+        onOpened: {
+            root.translateButtons(groupEditor);
+            standardButton(Dialog.Save).enabled = Qt.binding(() => groupNameInput.text.trim() !== "");
+            groupNameInput.forceActiveFocus();
+            groupNameInput.selectAll();
+        }
+        onAccepted: {
+            const name = groupNameInput.text.trim();
+            if (name === "") return;
+            if (creating) {
+                if (bookmarkGroups.count >= 100) return;
+                let id = "group-" + Date.now();
+                while (root.groupIndex(id) >= 0) id += "x";
+                bookmarkGroups.append({id:id, name:name, parentId:groupId, expanded:true});
+            } else {
+                const index = root.groupIndex(groupId);
+                if (index < 0) return;
+                bookmarkGroups.setProperty(index, "name", name);
+            }
+            root.rebuildBookmarkTree();
+            root.saveWorkspace();
+        }
+        TextField { id: groupNameInput; width: parent.width; maximumLength: 256; placeholderText: root.tr("Group name (required)") }
+    }
+    Dialog {
+        id: bookmarkGroupConfirm
+        property string groupId: ""
+        title: root.tr("Run bookmarked commands?")
+        anchors.centerIn: parent
+        modal: true
+        width: Math.min(480, root.width - 40)
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        onOpened: root.translateButtons(bookmarkGroupConfirm)
+        onAccepted: root.openBookmarkGroup(groupId, true)
+        Label { width: parent.width; wrapMode: Text.WordWrap; text: root.tr("This group contains custom commands. Opening all bookmarks runs these commands again.") }
+    }
+
+    Dialog {
+        id: bookmarksDialog
+        title: root.tr("Bookmarks")
+        anchors.centerIn: parent
+        modal: true
+        width: Math.min(620, root.width - 40)
+        height: Math.min(480, root.height - 40)
+        standardButtons: Dialog.Close
+        onOpened: {
+            root.translateButtons(bookmarksDialog);
+            root.rebuildBookmarkTree();
+            if (bookmarkList.currentIndex < 0 && bookmarkTree.count > 0) bookmarkList.currentIndex = 0;
+        }
+        ColumnLayout {
+            anchors.fill: parent
+            Label {
+                text: root.tr("Double-click a group to open all its logs. Use the arrow to expand or collapse.")
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+            ListView {
+                id: bookmarkList
+                model: bookmarkTree
+                clip: true
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                ScrollBar.vertical: ScrollBar {}
+                delegate: ItemDelegate {
+                    id: bookmarkItem
+                    required property int index
+                    required property string bookmarkTitle
+                    required property string logPath
+                    required property bool remote
+                    required property string connectionId
+                    required property bool isGroup
+                    required property string nodeId
+                    required property int sourceIndex
+                    required property int depth
+                    required property bool expanded
+                    property alias contextMenu: bookmarkMenu
+                    function selectBookmark(button) {
+                        bookmarkList.currentIndex = index;
+                        if (button === Qt.RightButton) bookmarkMenu.popup();
+                    }
+                    function activateBookmark(button) {
+                        if (button === Qt.LeftButton) {
+                            if (isGroup) root.openBookmarkGroup(nodeId);
+                            else root.openBookmark(sourceIndex);
+                        }
+                    }
+                    width: bookmarkList.width
+                    highlighted: bookmarkList.currentIndex === index
+                    contentItem: ColumnLayout {
+                        Label {
+                            text: (bookmarkItem.isGroup ? "▣ " : "") + bookmarkItem.bookmarkTitle
+                            font.bold: true
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                        }
+                        Label {
+                            visible: !bookmarkItem.isGroup
+                            text: (bookmarkItem.remote ? root.profileById(bookmarkItem.connectionId).name + " · " : "") + bookmarkItem.logPath
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                        }
+                    }
+                    MouseArea {
+                        objectName: "bookmarkRowMouse"
+                        anchors.fill: parent
+                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                        onClicked: mouse => {
+                            if (mouse.button === Qt.LeftButton && bookmarkItem.isGroup && mouse.x < 24 + bookmarkItem.depth * 20)
+                                root.toggleBookmarkGroup(bookmarkItem.nodeId);
+                            else bookmarkItem.selectBookmark(mouse.button);
+                        }
+                        onDoubleClicked: mouse => bookmarkItem.activateBookmark(mouse.button)
+                    }
+                    leftPadding: 30 + depth * 20
+                    Label {
+                        visible: bookmarkItem.isGroup
+                        x: 6 + bookmarkItem.depth * 20
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: bookmarkItem.expanded ? "▼" : "▶"
+                    }
+                    Menu {
+                        id: bookmarkMenu
+                        MenuItem { text: root.tr("Open all logs"); visible: bookmarkItem.isGroup; height: visible ? implicitHeight : 0; onTriggered: root.openBookmarkGroup(bookmarkItem.nodeId) }
+                        MenuItem { text: root.tr("Create subgroup"); visible: bookmarkItem.isGroup; height: visible ? implicitHeight : 0; enabled: bookmarkGroups.count < 100; onTriggered: root.editBookmarkGroup(bookmarkItem.nodeId, true) }
+                        MenuItem { text: root.tr("Edit…"); enabled: !bookmarkItem.isGroup || bookmarkItem.nodeId !== ""; onTriggered: bookmarkItem.isGroup ? root.editBookmarkGroup(bookmarkItem.nodeId) : root.editBookmark(bookmarkItem.sourceIndex) }
+                        MenuItem { text: root.tr("Delete"); enabled: !bookmarkItem.isGroup || bookmarkItem.nodeId !== ""; onTriggered: bookmarkItem.isGroup ? root.deleteBookmarkGroup(bookmarkItem.nodeId) : root.deleteBookmark(bookmarkItem.sourceIndex) }
+                    }
+                }
+                Keys.onReturnPressed: if (currentItem) currentItem.activateBookmark(Qt.LeftButton)
+                Keys.onEnterPressed: if (currentItem) currentItem.activateBookmark(Qt.LeftButton)
+            }
+            Label {
+                visible: bookmarks.count === 0
+                text: root.tr("Right-click a log tab to register a bookmark.")
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+            Label {
+                text: root.tr("Opening a bookmark starts new log collection. Commands run again. Existing archives are kept.")
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+            Label {
+                visible: bookmarks.count >= 100
+                text: root.tr("Up to 100 bookmarks can be saved.")
+                Layout.fillWidth: true
+            }
+            RowLayout {
+                Button { text: root.tr("Create group"); enabled: bookmarkGroups.count < 100; onClicked: root.editBookmarkGroup("", true) }
+                Button {
+                    text: root.tr("Open bookmark")
+                    enabled: !!bookmarkList.currentItem
+                    onClicked: bookmarkList.currentItem.activateBookmark(Qt.LeftButton)
+                }
+                Button {
+                    text: root.tr("Edit…")
+                    enabled: !!bookmarkList.currentItem && (!bookmarkList.currentItem.isGroup || bookmarkList.currentItem.nodeId !== "")
+                    onClicked: bookmarkList.currentItem.isGroup ? root.editBookmarkGroup(bookmarkList.currentItem.nodeId) : root.editBookmark(bookmarkList.currentItem.sourceIndex)
+                }
+                Button {
+                    text: root.tr("Delete")
+                    enabled: !!bookmarkList.currentItem && (!bookmarkList.currentItem.isGroup || bookmarkList.currentItem.nodeId !== "")
+                    onClicked: bookmarkList.currentItem.isGroup ? root.deleteBookmarkGroup(bookmarkList.currentItem.nodeId) : root.deleteBookmark(bookmarkList.currentItem.sourceIndex)
+                }
+            }
+        }
+    }
+
     Dialog {
         id: closeTabDialog
         property int tabIndex: -1
-        function requestClose(index) {
+        property string closeMode: "single"
+        function requestClose(index, mode = "single") {
             if (index < 0 || index >= logs.count) return;
             tabIndex = index;
+            closeMode = mode;
             open();
         }
-        title: root.tr("Close log tab?")
+        title: closeMode === "all" ? root.tr("Close all tabs?") : closeMode === "others" ? root.tr("Close other tabs?") : root.tr("Close log tab?")
         anchors.centerIn: parent
         modal: true
         closePolicy: Popup.CloseOnEscape
         standardButtons: Dialog.Ok | Dialog.Cancel
         onOpened: root.translateButtons(closeTabDialog)
-        onAccepted: { if (tabIndex >= 0 && tabIndex < logs.count) root.closeTab(tabIndex); }
+        onAccepted: { if (tabIndex >= 0 && tabIndex < logs.count) root.closeTabs(closeMode, tabIndex); }
         Label { text: root.tr("Closing stops log collection. Saved archives are kept."); wrapMode: Text.WordWrap }
     }
 
@@ -366,7 +867,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
             }
             Label {
-                text: root.tr("Changes apply on the next connection. Connections used by tabs cannot be deleted.")
+                text: root.tr("Changes apply on the next connection. Connections used by tabs or bookmarks cannot be deleted.")
                 wrapMode: Text.WordWrap
                 Layout.fillWidth: true
             }
@@ -471,6 +972,7 @@ ApplicationWindow {
             root.translateButtons(settingsDialog);
             defaultLines.value = settings.initialLines;
             defaultCapacity.value = settings.capacityMiB;
+            appearanceSelection.currentIndex = appearanceSelection.codes.indexOf(settings.appearance);
         }
         onAccepted: {
             settings.initialLines = defaultLines.value;
@@ -478,6 +980,16 @@ ApplicationWindow {
             root.scheduleSave();
         }
         ColumnLayout {
+            RowLayout {
+                Label { text: root.tr("Appearance") }
+                ComboBox {
+                    id: appearanceSelection
+                    model: [root.tr("Auto (system)"), root.tr("Light"), root.tr("Dark")]
+                    property var codes: ["auto", "light", "dark"]
+                    currentIndex: Math.max(0, codes.indexOf(settings.appearance))
+                    onActivated: settings.appearance = codes[currentIndex]
+                }
+            }
             RowLayout {
                 Label { text: root.tr("Display language") }
                 ComboBox {
@@ -553,6 +1065,7 @@ ApplicationWindow {
                 filterRegex: false,
                 filterCase: false,
                 filterInvert: false,
+                filterNumericJson: "null",
                 searchText: "",
                 searchRegex: false,
                 searchCase: false,
@@ -768,6 +1281,10 @@ ApplicationWindow {
                 onClicked: profilesDialog.open()
             }
             ToolButton {
+                text: root.tr("Bookmarks…")
+                onClicked: bookmarksDialog.open()
+            }
+            ToolButton {
                 text: root.tr("Settings…")
                 onClicked: settingsDialog.open()
             }
@@ -794,6 +1311,7 @@ ApplicationWindow {
         TabBar {
             id: tabs
             onCurrentIndexChanged: {
+                if (root.movingTab) return;
                 if (currentIndex >= 0 && currentIndex < logs.count) {
                     logs.setProperty(currentIndex, "unread", false);
                     logs.setProperty(currentIndex, "alert", false);
@@ -813,10 +1331,12 @@ ApplicationWindow {
                     required property bool alert
                     property bool connected: false
                     property alias statusDot: notificationDot
+                    property alias contextMenu: tabMenu
+                    opacity: tabDrag.active ? 0.55 : 1
                     text: logTitle
                     rightPadding: 36
                     implicitHeight: Math.max(implicitBackgroundHeight + topInset + bottomInset,
-                                             implicitContentHeight + topPadding + bottomPadding) + 3
+                                             implicitContentHeight + topPadding + bottomPadding) + 6
                     background: Rectangle {
                         implicitHeight: 21
                         color: tab.checked ? Qt.lighter(tab.palette.button, 1.50) : (tab.hovered ? Qt.lighter(tab.palette.button, 1.08) : tab.palette.button)
@@ -827,10 +1347,34 @@ ApplicationWindow {
                         acceptedButtons: Qt.RightButton
                         onTapped: tabMenu.popup()
                     }
+                    DragHandler {
+                        id: tabDrag
+                        target: null
+                        acceptedButtons: Qt.LeftButton
+                        yAxis.enabled: false
+                        property int sourceIndex: -1
+                        onActiveChanged: {
+                            if (active) sourceIndex = tab.index;
+                            else if (sourceIndex >= 0) {
+                                root.dropTab(sourceIndex, centroid.scenePosition.x, centroid.scenePosition.y);
+                                sourceIndex = -1;
+                            }
+                        }
+                    }
                     Menu {
                         id: tabMenu
                         MenuItem { text: root.tr("Edit and reconnect…"); onTriggered: editTabDialog.edit(tab.index) }
                         MenuItem { text: root.tr("Reconnect / run again"); onTriggered: root.restartTab(tab.index) }
+                        MenuSeparator {}
+                        MenuItem {
+                            text: root.tr("Register bookmark")
+                            enabled: bookmarks.count < 100
+                            onTriggered: root.registerBookmark(tab.index)
+                        }
+                        MenuSeparator {}
+                        MenuItem { text: root.tr("Close"); onTriggered: closeTabDialog.requestClose(tab.index) }
+                        MenuItem { text: root.tr("Close other tabs"); enabled: logs.count > 1; onTriggered: closeTabDialog.requestClose(tab.index, "others") }
+                        MenuItem { text: root.tr("Close all tabs"); onTriggered: closeTabDialog.requestClose(tab.index, "all") }
                     }
                     contentItem: RowLayout {
                         spacing: 6
@@ -913,6 +1457,11 @@ ApplicationWindow {
                     required property bool filterRegex
                     required property bool filterCase
                     required property bool filterInvert
+                    required property string filterNumericJson
+                    property var filterNumeric: JSON.parse(filterNumericJson)
+                    function numericFilterCondition() {
+                        return filterNumericEnabled.checked ? {capture:filterCapture.value, operator:filterOperator.currentText, value:filterValue.text} : null;
+                    }
                     required property string searchText
                     required property bool searchRegex
                     required property bool searchCase
@@ -949,6 +1498,13 @@ ApplicationWindow {
                         editTrapRegex.checked = rule.regex;
                         editTrapCase.checked = rule.ignoreCase;
                         editTrapColor.text = rule.color;
+                        editTrapNumeric.checked = !!rule.numeric;
+                        editTrapCapture.value = rule.numeric ? rule.numeric.capture : 1;
+                        editTrapOperator.currentIndex = Math.max(0, editTrapOperator.model.indexOf(rule.numeric ? rule.numeric.operator : ">"));
+                        editTrapValue.text = rule.numeric ? rule.numeric.value.toString() : "100";
+                        editTrapBackground.checked = !!rule.background;
+                        editTrapOpacity.value = rule.opacity === undefined ? 25 : rule.opacity;
+                        editTrapScope.currentIndex = Math.max(0, editTrapScope.codes.indexOf(rule.scope || "match"));
                         trapEditor.error = "";
                         trapEditor.open();
                     }
@@ -976,8 +1532,19 @@ ApplicationWindow {
                         optionsToggle.toggle();
                         if (!filterRow.visible || !searchRow.visible || !querySummary.visible || !trapRow.visible)
                             return false;
+                        const numericEnabled = filterNumericEnabled.checked;
+                        if (filterNumericEnabled.parent !== filterRow || !filterNumericEnabled.visible)
+                            return false;
+                        for (const checked of [false, true, false]) {
+                            filterNumericEnabled.checked = checked;
+                            if (filterNumericRow.visible !== checked
+                                || filterCaptureLabel.visible !== checked || filterCapture.visible !== checked
+                                || filterOperator.visible !== checked || filterValue.visible !== checked)
+                                return false;
+                        }
+                        filterNumericEnabled.checked = numericEnabled;
                         optionsToggle.toggle();
-                        const retained = !filterRow.visible && !searchRow.visible && !querySummary.visible && !trapRow.visible
+                        const retained = !filterRow.visible && !filterNumericRow.visible && !searchRow.visible && !querySummary.visible && !trapRow.visible
                             && filterInput.text === "smoke-filter" && searchInput.text === "smoke-search" && trapInput.text === "smoke-trap"
                             && optionsToggle.text.includes(root.tr("Filter enabled"))
                             && (page.trapRules.length === 0 || optionsToggle.text.includes(root.tr("Text trap enabled")));
@@ -1037,6 +1604,7 @@ ApplicationWindow {
                         logs.setProperty(index, "filterRegex", filterRegex.checked);
                         logs.setProperty(index, "filterCase", filterCase.checked);
                         logs.setProperty(index, "filterInvert", filterInvert.checked);
+                        logs.setProperty(index, "filterNumericJson", JSON.stringify(page.numericFilterCondition()));
                         logs.setProperty(index, "searchText", searchInput.text);
                         logs.setProperty(index, "searchRegex", searchRegex.checked);
                         logs.setProperty(index, "searchCase", searchCase.checked);
@@ -1055,7 +1623,7 @@ ApplicationWindow {
                                 run_local(page.logPath, page.capacity);
                             else
                                 open(page.logPath, page.initial, page.capacity);
-                            set_filter(page.filterText, page.filterRegex, page.filterCase, page.filterInvert);
+                            set_numeric_filter(page.filterText, page.filterRegex, page.filterCase, page.filterInvert, page.filterNumeric);
                             search(page.searchText, page.searchRegex, page.searchCase);
                             set_trap_rules(page.trapRules);
                         }
@@ -1107,7 +1675,9 @@ ApplicationWindow {
                         function save() {
                             const rules = page.trapRules.slice();
                             const rule = {text: editTrapText.text, regex: editTrapRegex.checked,
-                                ignoreCase: editTrapCase.checked, color: editTrapColor.text};
+                                ignoreCase: editTrapCase.checked, color: editTrapColor.text,
+                                numeric:editTrapNumeric.checked ? {capture:editTrapCapture.value, operator:editTrapOperator.currentText, value:editTrapValue.text} : null,
+                                background:editTrapBackground.checked, opacity:editTrapOpacity.value, scope:editTrapScope.codes[editTrapScope.currentIndex]};
                             if (tagIndex >= 0) rules[tagIndex] = rule;
                             else rules.push(rule);
                             error = backend.validate_trap_rules(rules);
@@ -1124,6 +1694,28 @@ ApplicationWindow {
                             RowLayout {
                                 CheckBox { id: editTrapRegex; text: root.tr("Regex") }
                                 CheckBox { id: editTrapCase; text: root.tr("Ignore case") }
+                            }
+                            CheckBox { id: editTrapNumeric; text: root.tr("Numeric condition"); onToggled: if (checked) editTrapRegex.checked = true }
+                            RowLayout {
+                                visible: editTrapNumeric.checked
+                                Label { text: root.tr("Capture group") }
+                                SpinBox { id: editTrapCapture; from: 1; to: 99; value: 1; editable: true }
+                                ComboBox { id: editTrapOperator; model: [">", ">=", "<", "<=", "==", "!="] }
+                                TextField { id: editTrapValue; text: "100"; maximumLength: 128; placeholderText: root.tr("Comparison value"); Layout.fillWidth: true }
+                            }
+                            RowLayout {
+                                CheckBox { id: editTrapBackground; text: root.tr("Background highlight") }
+                                Label { text: root.tr("Opacity (%)"); visible: editTrapBackground.checked }
+                                SpinBox { id: editTrapOpacity; visible: editTrapBackground.checked; from: 0; to: 100; value: 25; editable: true }
+                            }
+                            RowLayout {
+                                Label { text: root.tr("Highlight scope") }
+                                ComboBox {
+                                    id: editTrapScope
+                                    property var codes: ["match", "capture", "line"]
+                                    model: [root.tr("Regex match"), root.tr("Captured number"), root.tr("Entire line")]
+                                    Layout.fillWidth: true
+                                }
                             }
                             Label { text: root.tr("Highlight text color") }
                             RowLayout {
@@ -1348,6 +1940,12 @@ ApplicationWindow {
                                     page.saveView();
                                 }
                             }
+                            CheckBox {
+                                id: filterNumericEnabled
+                                text: root.tr("Numeric condition")
+                                checked: !!page.filterNumeric
+                                onToggled: { if (checked) filterRegex.checked = true; page.saveView(); filterTimer.restart(); }
+                            }
                             Button {
                                 text: root.tr("Go live")
                                 onClicked: backend.show_live()
@@ -1356,7 +1954,32 @@ ApplicationWindow {
                         Timer {
                             id: filterTimer
                             interval: 300
-                            onTriggered: backend.set_filter(filterInput.text, filterRegex.checked, filterCase.checked, filterInvert.checked)
+                            onTriggered: backend.set_numeric_filter(filterInput.text, filterRegex.checked, filterCase.checked, filterInvert.checked, page.numericFilterCondition())
+                        }
+                        RowLayout {
+                            id: filterNumericRow
+                            visible: optionsToggle.checked && filterNumericEnabled.checked
+                            Label { id: filterCaptureLabel; text: root.tr("Capture group") }
+                            SpinBox {
+                                id: filterCapture
+                                from: 1; to: 99; value: page.filterNumeric ? page.filterNumeric.capture : 1
+                                editable: true
+                                onValueModified: { page.saveView(); filterTimer.restart(); }
+                            }
+                            ComboBox {
+                                id: filterOperator
+                                model: [">", ">=", "<", "<=", "==", "!="]
+                                currentIndex: Math.max(0, model.indexOf(page.filterNumeric ? page.filterNumeric.operator : ">"))
+                                onActivated: { page.saveView(); filterTimer.restart(); }
+                            }
+                            TextField {
+                                id: filterValue
+                                text: page.filterNumeric ? page.filterNumeric.value.toString() : "100"
+                                maximumLength: 128
+                                placeholderText: root.tr("Comparison value")
+                                Layout.fillWidth: true
+                                onTextEdited: { page.saveView(); filterTimer.restart(); }
+                            }
                         }
                         RowLayout {
                             id: searchRow
@@ -1665,6 +2288,8 @@ ApplicationWindow {
 
     // Opt-in headless integration check: two tabs, Rust/QML data and polling.
     Component.onCompleted: {
+        settings.appearance = workspace.state.appearance;
+        root.applyAppearance();
         const savedLanguage = workspace.state.language;
         translations.select(savedLanguage || translations.detect(Qt.locale().name));
         if (smokePath !== "") {
@@ -1683,6 +2308,10 @@ ApplicationWindow {
             root.height = state.height;
             for (const profile of state.connections)
                 connectionProfiles.append(profile);
+            for (const bookmark of state.bookmarks)
+                bookmarks.append(bookmark);
+            for (const group of state.bookmarkGroups)
+                bookmarkGroups.append(group);
             for (const tab of state.tabs)
                 logs.append(tab);
             tabs.currentIndex = state.currentIndex;
@@ -1702,6 +2331,274 @@ ApplicationWindow {
             localCommandTitle.text = "Local command test";
             localCommandInput.text = "printf 'local-out\\n'; printf 'local-error\\n' >&2";
             localCommandTimer.start();
+        }
+        if (bookmarkTestMode !== "") bookmarkTestTimer.start();
+        if (tabUiTest) {
+            for (let i = 0; i < 3; ++i)
+                root.addLog("printf 'tab-" + i + "\\n'; sleep 5", "custom", "Tab " + i);
+            tabUiTimer.start();
+        }
+        if (themeTestMode !== "") {
+            settingsDialog.open();
+            themeTestTimer.start();
+        }
+    }
+    Timer {
+        id: tabUiTimer
+        interval: 500
+        property int stage: 0
+        property var originalPages: []
+        property var originalArchives: []
+        onTriggered: {
+            // qmllint disable missing-property
+            if (stage === 0) {
+                for (let i = 0; i < 3; ++i) {
+                    originalPages.push(pageRepeater.itemAt(i));
+                    originalArchives.push(pageRepeater.itemAt(i).backend.archivePath);
+                }
+                tabs.currentIndex = 1;
+                logs.setProperty(0, "unread", true);
+                root.moveTab(0, 2);
+                stage++;
+                restart();
+                return;
+            }
+            if (stage === 1) {
+                const order = [1, 2, 0];
+                for (let i = 0; i < 3; ++i) {
+                    const page = pageRepeater.itemAt(i);
+                    if (page !== originalPages[order[i]] || page.backend.archivePath !== originalArchives[order[i]]
+                        || page.backend.text !== "tab-" + order[i] + "\n" || !page.backend.connected
+                        || logs.get(i).logTitle !== "Tab " + order[i]) {
+                        console.error("TAILER_TAB_MOVE_FAILED", i); Qt.exit(1); return;
+                    }
+                }
+                if (tabs.currentIndex !== 0 || !logs.get(2).unread) { console.error("TAILER_TAB_SELECTION_FAILED"); Qt.exit(1); return; }
+                root.moveTab(2, 0);
+                root.moveTab(1, 2);
+                root.saveWorkspace();
+                if (tabs.currentIndex !== 2 || workspace.state.tabs[2].logTitle !== "Tab 1") { console.error("TAILER_TAB_ORDER_SAVE_FAILED"); Qt.exit(1); return; }
+                closeTabDialog.requestClose(0, "others");
+                closeTabDialog.reject();
+                if (logs.count !== 3) { console.error("TAILER_TAB_CLOSE_CANCEL_FAILED"); Qt.exit(1); return; }
+                // Trigger the real context menu actions on an inactive tab.
+                const menu = tabRepeater.itemAt(0).contextMenu;
+                for (let i = 0; i < menu.count; ++i) {
+                    const action = menu.itemAt(i);
+                    if (action && action.text === root.tr("Close other tabs")) action.triggered();
+                }
+                closeTabDialog.accept();
+                if (logs.count !== 1 || logs.get(0).logTitle !== "Tab 0" || pageRepeater.itemAt(0) !== originalPages[0]
+                    || !pageRepeater.itemAt(0).backend.connected || tabs.currentIndex !== 0) {
+                    console.error("TAILER_TAB_CLOSE_OTHERS_FAILED"); Qt.exit(1); return;
+                }
+                root.addLog("printf 'extra\\n'", "custom", "Extra");
+                closeTabDialog.requestClose(0);
+                closeTabDialog.accept();
+                if (logs.count !== 1 || logs.get(0).logTitle !== "Extra") { console.error("TAILER_TAB_CLOSE_FAILED"); Qt.exit(1); return; }
+                const lastMenu = tabRepeater.itemAt(0).contextMenu;
+                for (let i = 0; i < lastMenu.count; ++i) {
+                    const action = lastMenu.itemAt(i);
+                    if (action && action.text === root.tr("Close all tabs")) action.triggered();
+                }
+                closeTabDialog.accept();
+                root.saveWorkspace();
+                if (logs.count !== 0 || tabs.currentIndex !== -1 || workspace.state.tabs.length !== 0) {
+                    console.error("TAILER_TAB_CLOSE_ALL_FAILED"); Qt.exit(1); return;
+                }
+                console.log("TAILER_TAB_UI_OK");
+                Qt.quit();
+            }
+            // qmllint enable missing-property
+        }
+    }
+    Timer {
+        id: themeTestTimer
+        interval: 250
+        property int stage: 0
+        function verify(mode) {
+            if (settings.appearance !== mode || appearanceSelection.codes[appearanceSelection.currentIndex] !== mode) return false;
+            const dark = mode === "dark" || (mode === "auto" && Qt.styleHints.colorScheme === Qt.Dark);
+            return root.darkAppearance === dark
+                && root.palette.base.toString() === (dark ? "#1b1b1b" : "#ffffff")
+                && settingsDialog.palette.text.toString() === (dark ? "#eeeeee" : "#202020")
+                && appearanceSelection.palette.button.toString() === (dark ? "#353535" : "#e5e5e5");
+        }
+        onTriggered: {
+            if (root.themeTestMode !== "cycle") {
+                if (!verify(root.themeTestMode)) {
+                    console.error("TAILER_THEME_RESTORE_FAILED", settings.appearance, appearanceSelection.currentIndex,
+                        root.darkAppearance, root.palette.base, settingsDialog.palette.text, appearanceSelection.palette.button);
+                    Qt.exit(1); return;
+                }
+                console.log("TAILER_THEME_RESTORE_OK", root.themeTestMode);
+                Qt.quit();
+                return;
+            }
+            const modes = ["auto", "dark", "light", "auto"];
+            if (!verify(modes[stage])) { console.error("TAILER_THEME_FAILED", modes[stage]); Qt.exit(1); return; }
+            if (++stage < modes.length) {
+                appearanceSelection.currentIndex = appearanceSelection.codes.indexOf(modes[stage]);
+                appearanceSelection.activated(appearanceSelection.currentIndex);
+                restart();
+            } else {
+                root.saveWorkspace();
+                if (workspace.error !== "") { console.error("TAILER_THEME_SAVE_FAILED"); Qt.exit(1); return; }
+                console.log("TAILER_THEME_CYCLE_OK");
+                Qt.quit();
+            }
+        }
+    }
+    Timer {
+        id: bookmarkTestTimer
+        interval: 750
+        property int stage: 0
+        onTriggered: {
+            if (root.bookmarkTestMode === "groups-save") {
+                root.editBookmarkGroup("", true);
+                groupNameInput.text = "Production";
+                groupEditor.accept();
+                const parentId = bookmarkGroups.get(0).id;
+                root.editBookmarkGroup(parentId, true);
+                groupNameInput.text = "Web";
+                groupEditor.accept();
+                const childId = bookmarkGroups.get(1).id;
+                root.editBookmarkGroup(parentId);
+                groupNameInput.text = "本番";
+                groupEditor.accept();
+                for (let i = 0; i < 2; ++i) {
+                    root.addLog("printf 'group-" + i + "\\n'", "custom", "Group log " + i);
+                    root.registerBookmark(i);
+                    bookmarkRegisteredDialog.accept();
+                    root.editBookmark(i);
+                    bookmarkGroupSelection.currentIndex = bookmarkGroupSelection.ids.indexOf(i === 0 ? parentId : childId);
+                    bookmarkEditor.accept();
+                }
+                root.rebuildBookmarkTree();
+                if (bookmarkTree.count !== 5 || bookmarkGroups.get(0).name !== "本番" || bookmarks.get(1).groupId !== childId) {
+                    console.error("TAILER_GROUP_CREATE_FAILED"); Qt.exit(1); return;
+                }
+                root.toggleBookmarkGroup(parentId);
+                if (bookmarkTree.count !== 2) { console.error("TAILER_GROUP_COLLAPSE_FAILED"); Qt.exit(1); return; }
+                while (logs.count) root.closeTab(0);
+                root.saveWorkspace();
+                console.log("TAILER_GROUP_SAVE_OK");
+                Qt.quit();
+                return;
+            }
+            if (root.bookmarkTestMode === "groups-open") {
+                const parentId = bookmarkGroups.count ? bookmarkGroups.get(0).id : "";
+                if (stage === 0) {
+                    root.rebuildBookmarkTree();
+                    if (bookmarkGroups.count !== 2 || bookmarks.count !== 2 || bookmarkTree.count !== 2 || logs.count !== 0) {
+                        console.error("TAILER_GROUP_RESTORE_FAILED"); Qt.exit(1); return;
+                    }
+                    root.toggleBookmarkGroup(parentId);
+                    bookmarksDialog.open();
+                    root.openBookmarkGroup(parentId);
+                    if (!bookmarkGroupConfirm.visible || logs.count !== 0) { console.error("TAILER_GROUP_CONFIRM_FAILED"); Qt.exit(1); return; }
+                    bookmarkGroupConfirm.reject();
+                    if (!bookmarksDialog.visible || logs.count !== 0) { console.error("TAILER_GROUP_CANCEL_FAILED"); Qt.exit(1); return; }
+                    root.openBookmarkGroup(parentId);
+                    bookmarkGroupConfirm.accept();
+                    if (logs.count !== 2 || bookmarksDialog.visible) { console.error("TAILER_GROUP_OPEN_FAILED"); Qt.exit(1); return; }
+                    stage++;
+                    restart();
+                    return;
+                }
+                // qmllint disable missing-property
+                for (let i = 0; i < 2; ++i) {
+                    if (pageRepeater.itemAt(i).backend.text !== "group-" + i + "\n") {
+                        console.error("TAILER_GROUP_OUTPUT_FAILED"); Qt.exit(1); return;
+                    }
+                }
+                // qmllint enable missing-property
+                while (logs.count) root.closeTab(0);
+                root.deleteBookmarkGroup(parentId);
+                if (bookmarkGroups.count !== 0 || bookmarks.count !== 2 || bookmarks.get(0).groupId !== "" || bookmarks.get(1).groupId !== "") {
+                    console.error("TAILER_GROUP_DELETE_FAILED"); Qt.exit(1); return;
+                }
+                root.saveWorkspace();
+                console.log("TAILER_GROUP_OPEN_DELETE_OK");
+                Qt.quit();
+                return;
+            }
+            if (root.bookmarkTestMode === "save") {
+                if (stage === 0) {
+                    root.addLog("printf 'bookmark-output\\n'", "custom", "Bookmark test", "CP932");
+                    logs.setProperty(0, "filterText", "bookmark");
+                    logs.setProperty(0, "searchText", "output");
+                    logs.setProperty(0, "follow", false);
+                    logs.setProperty(0, "trapRulesJson", '[{"text":"output","regex":false,"ignoreCase":true,"color":"#35c66b"}]');
+                    root.registerBookmark(0);
+                    root.registerBookmark(0);
+                    if (bookmarks.count !== 1) { console.error("TAILER_BOOKMARK_DUPLICATE_FAILED"); Qt.exit(1); return; }
+                    if (!bookmarkRegisteredDialog.visible || bookmarksDialog.visible || bookmarkRegisteredDialog.standardButtons !== Dialog.Ok) {
+                        console.error("TAILER_BOOKMARK_CONFIRM_FAILED"); Qt.exit(1); return;
+                    }
+                    bookmarkRegisteredDialog.accept();
+                    root.editBookmark(0);
+                    bookmarkTitleInput.text = "  本番ログ / My bookmark  ";
+                    bookmarkEditor.accept();
+                    // Renaming the bookmark must not change its original configuration or duplicate it.
+                    root.registerBookmark(0);
+                    bookmarkRegisteredDialog.accept();
+                    if (bookmarks.count !== 1 || bookmarks.get(0).bookmarkTitle !== "本番ログ / My bookmark" || logs.get(0).logTitle !== "Bookmark test") {
+                        console.error("TAILER_BOOKMARK_EDIT_FAILED"); Qt.exit(1); return;
+                    }
+                    root.closeTab(0);
+                    root.saveWorkspace();
+                    if (logs.count !== 0 || bookmarks.count !== 1 || workspace.error !== "") { console.error("TAILER_BOOKMARK_SAVE_FAILED"); Qt.exit(1); return; }
+                    console.log("TAILER_BOOKMARK_SAVE_OK");
+                    Qt.quit();
+                }
+                return;
+            }
+            if (stage === 0) {
+                if (bookmarks.count !== 1 || logs.count !== 0) { console.error("TAILER_BOOKMARK_RESTORE_FAILED"); Qt.exit(1); return; }
+                if (bookmarks.get(0).bookmarkTitle !== "本番ログ / My bookmark") { console.error("TAILER_BOOKMARK_TITLE_RESTORE_FAILED"); Qt.exit(1); return; }
+                bookmarksDialog.open();
+                stage++;
+                restart();
+                return;
+            }
+            if (stage === 1) {
+                const item = bookmarkList.itemAtIndex(1);
+                item.selectBookmark(Qt.RightButton);
+                const menu = item.contextMenu;
+                if (!menu || !menu.visible) { console.error("TAILER_BOOKMARK_CONTEXT_FAILED"); Qt.exit(1); return; }
+                menu.itemAt(2).triggered();
+                menu.close();
+                if (!bookmarkEditor.visible) { console.error("TAILER_BOOKMARK_CONTEXT_EDIT_FAILED"); Qt.exit(1); return; }
+                bookmarkTitleInput.text = "";
+                if (bookmarkEditor.standardButton(Dialog.Save).enabled) { console.error("TAILER_BOOKMARK_EMPTY_TITLE_FAILED"); Qt.exit(1); return; }
+                bookmarkEditor.reject();
+                item.activateBookmark(Qt.LeftButton);
+                if (bookmarksDialog.visible || logs.count !== 1) { console.error("TAILER_BOOKMARK_DOUBLE_CLICK_FAILED"); Qt.exit(1); return; }
+                stage++;
+                restart();
+                return;
+            }
+            // qmllint disable missing-property
+            const backend = pageRepeater.itemAt(0).backend;
+            const row = logs.get(0);
+            if (backend.text !== "bookmark-output\n" || row.logTitle !== "本番ログ / My bookmark" || row.encoding !== "CP932" || row.filterText !== "bookmark" || row.searchText !== "output" || row.follow || JSON.parse(row.trapRulesJson)[0].text !== "output" || row.unread || row.alert) {
+                console.error("TAILER_BOOKMARK_OPEN_FAILED", backend.text); Qt.exit(1); return;
+            }
+            // qmllint enable missing-property
+            const remote = root.logConfiguration(row);
+            remote.remote = true;
+            remote.connectionId = "bookmark-profile";
+            remote.bookmarkTitle = "Remote test";
+            bookmarks.append(remote);
+            if (!root.profileUsed("bookmark-profile")) { console.error("TAILER_BOOKMARK_PROFILE_FAILED"); Qt.exit(1); return; }
+            bookmarks.remove(1);
+            root.closeTab(0);
+            root.deleteBookmark(0);
+            root.saveWorkspace();
+            if (workspace.error !== "" || root.profileUsed("bookmark-profile")) { console.error("TAILER_BOOKMARK_DELETE_FAILED"); Qt.exit(1); return; }
+            console.log("TAILER_BOOKMARK_OPEN_DELETE_OK");
+            Qt.quit();
         }
     }
     Timer {
