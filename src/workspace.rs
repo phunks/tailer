@@ -183,6 +183,7 @@ pub fn sanitize(value: &Value) -> Value {
                     clean[name] = json!(tab[name].as_bool().unwrap_or(false));
                 }
                 clean["follow"] = json!(tab["follow"].as_bool().unwrap_or(true));
+                clean["filterEnabled"] = json!(tab["filterEnabled"].as_bool().unwrap_or(true));
                 // An explicitly empty list stays empty; only legacy tabs migrate.
                 clean["trapRulesJson"] = json!(
                     crate::trap::sanitize_rules(
@@ -634,6 +635,30 @@ mod tests {
             sanitize(&json!({"bookmarks":[null, false, "invalid"]}))["bookmarks"],
             json!([])
         );
+    }
+
+    #[test]
+    fn filter_and_trap_enabled_states_survive_tabs_and_bookmarks() {
+        let row = json!({"filterText":"ERROR.*", "filterRegex":true, "filterEnabled":false,
+            "trapRulesJson":r#"[{"text":"WARN.*","regex":true,"enabled":false}]"#});
+        let clean = sanitize(&json!({"tabs":[row.clone(), {}], "bookmarks":[row]}));
+        for collection in ["tabs", "bookmarks"] {
+            assert_eq!(clean[collection][0]["filterEnabled"], false);
+            assert_eq!(clean[collection][0]["filterText"], "ERROR.*");
+            let rules: Value =
+                serde_json::from_str(clean[collection][0]["trapRulesJson"].as_str().unwrap())
+                    .unwrap();
+            assert_eq!(rules[0]["enabled"], false);
+            assert_eq!(rules[0]["text"], "WARN.*");
+        }
+        assert_eq!(clean["tabs"][1]["filterEnabled"], true);
+        assert_eq!(sanitize(&clean), clean);
+        let dir = std::env::temp_dir().join(format!("tailer-rule-enable-{}", std::process::id()));
+        let path = dir.join("workspace.json");
+        save_file(&path, &clean).unwrap();
+        let restored: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(sanitize(&restored), clean);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

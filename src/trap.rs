@@ -9,6 +9,7 @@ const CARRY_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct Rule {
+    pub enabled: bool,
     pub text: String,
     pub regex: bool,
     pub ignore_case: bool,
@@ -45,6 +46,9 @@ pub fn sanitize_rules(value: &Value) -> Value {
                     .unwrap_or(DEFAULT_COLOR);
                 let mut clean = json!({"text":text, "regex":v["regex"].as_bool().unwrap_or(false),
                     "ignoreCase":v["ignoreCase"].as_bool().unwrap_or(false), "color":color});
+                if v["enabled"].as_bool() == Some(false) {
+                    clean["enabled"] = json!(false);
+                }
                 if !v["numeric"].is_null() {
                     clean["numeric"] = crate::numeric::sanitize(&v["numeric"]);
                 }
@@ -77,6 +81,9 @@ pub struct CompiledRule {
 
 impl CompiledRule {
     fn ranges(&self, text: &str) -> Vec<Range<usize>> {
+        if !self.rule.enabled {
+            return Vec::new();
+        }
         if self.numeric.is_some() || self.rule.scope == "line" || self.rule.scope == "capture" {
             let mut result = Vec::new();
             let mut offset = 0;
@@ -149,6 +156,7 @@ pub fn compile_rules(value: &Value) -> Result<Vec<CompiledRule>, String> {
             return Err("Choose a color in #RRGGBB format.".into());
         }
         let rule = Rule {
+            enabled: entry["enabled"].as_bool().unwrap_or(true),
             text: text.into(),
             regex: entry["regex"].as_bool().unwrap_or(false),
             ignore_case: entry["ignoreCase"].as_bool().unwrap_or(false),
@@ -393,6 +401,33 @@ pub fn context_position(text: &str, selected: Option<usize>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn disabled_rules_preserve_conditions_without_detection_or_highlighting() {
+        let mut value = json!([{"text":"ERROR.*", "regex":true, "enabled":false}]);
+        let clean = sanitize_rules(&value);
+        assert_eq!(clean[0]["enabled"], false);
+        assert_eq!(sanitize_rules(&clean), clean);
+        let mut trap = Trap::default();
+        let rules = compile_rules(&value).unwrap();
+        assert_eq!(
+            highlight_rules("ERROR test", &rules),
+            "<pre>ERROR test</pre>"
+        );
+        trap.configure_rules(rules);
+        trap.receive(b"ERROR test\n");
+        assert_eq!(trap.hits, 0);
+        value[0]["enabled"] = json!(true);
+        let rules = compile_rules(&value).unwrap();
+        assert!(highlight_rules("ERROR test", &rules).contains("color:"));
+        trap.configure_rules(rules);
+        trap.receive(b"ERROR new\n");
+        assert_eq!(trap.hits, 1);
+        assert!(
+            compile_rules(&json!([{"text":"legacy"}])).unwrap()[0]
+                .rule
+                .enabled
+        );
+    }
     #[test]
     fn numeric_traps_wait_for_newlines_and_highlight_scopes() {
         let rule = json!({"text":r".* (\d+)$", "regex":true,

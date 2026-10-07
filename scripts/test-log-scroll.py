@@ -20,6 +20,7 @@ follow_button = source[follow_start:follow_end]
 # to a separate copy of the wheel handler. Only its data dependencies are mocked.
 fixture = """
 import QtQuick
+import QtQuick.Window
 import QtQuick.Controls.Fusion
 import QtQuick.Layouts
 import QtTest
@@ -44,9 +45,82 @@ Item {
 """ + follow_button + scroll_view + """
     }
     TestCase {
+        id: testCase
         name: "LogScroll"
         when: windowShown
+        property bool watchingFollow: false
+        property int offBottomFrames: 0
+        property bool watchingPaused: false
+        property real pausedY: 0
+        property real pausedX: 0
+        property int shiftedPausedFrames: 0
+        Connections {
+            target: root.Window.window
+            function onAfterAnimating() {
+                if (testCase.watchingFollow && Math.abs(scroll.contentItem.contentY
+                        - Math.max(0, scroll.contentItem.contentHeight - scroll.contentItem.height)) > 2)
+                    ++testCase.offBottomFrames;
+                if (testCase.watchingPaused && (Math.abs(scroll.contentItem.contentY - testCase.pausedY) > 1
+                        || Math.abs(scroll.contentItem.contentX - testCase.pausedX) > 1))
+                    ++testCase.shiftedPausedFrames;
+            }
+        }
         function initTestCase() { backend.changed(); wait(100); }
+        function test_paused_view_does_not_jump_during_updates() {
+            const before = backend.highlightedText;
+            follow.checked = false;
+            const lines = Array.from({length: 300}, (_, i) => "Line " + i + " " + "wide log ".repeat(40));
+            backend.highlightedText = "<pre>" + lines.join("<br>") + "</pre>";
+            wait(50);
+            scroll.contentItem.contentY = 1200;
+            scroll.contentItem.contentX = 120;
+            pausedY = scroll.contentItem.contentY;
+            pausedX = scroll.contentItem.contentX;
+            verify(pausedY > 0 && pausedX > 0);
+            shiftedPausedFrames = 0;
+            watchingPaused = true;
+            try {
+                for (let i = 0; i < 12; ++i) {
+                    lines.push("Appended " + i);
+                    backend.highlightedText = "<pre>" + lines.join("<br>") + "</pre>";
+                    compare(scroll.contentItem.contentY, pausedY, "No intermediate vertical reset");
+                    compare(scroll.contentItem.contentX, pausedX, "No intermediate horizontal reset");
+                    wait(i % 2 === 0 ? 20 : 80);
+                    compare(scroll.contentItem.contentY, pausedY);
+                    compare(scroll.contentItem.contentX, pausedX);
+                }
+                compare(shiftedPausedFrames, 0, "Every frame must keep the paused viewport stable");
+            } finally {
+                watchingPaused = false;
+                backend.highlightedText = before;
+                wait(50);
+                follow.checked = true;
+            }
+        }
+        function test_follow_does_not_jump_during_document_replacement() {
+            const before = backend.highlightedText;
+            follow.checked = true;
+            wait(50);
+            offBottomFrames = 0;
+            watchingFollow = true;
+            try {
+                // Both growing output and a capped tail window replace the HTML.
+                // Uneven waits simulate fragmented/batched SSH reception.
+                for (let i = 0; i < 12; ++i) {
+                    backend.highlightedText = "<pre>" + Array.from(
+                        {length: 300 + i % 3}, (_, n) => "Line " + (n + i)).join("<br>") + "</pre>";
+                    compare(scroll.contentItem.contentY,
+                        Math.max(0, scroll.contentItem.contentHeight - scroll.contentItem.height),
+                        "Restore follow before returning to the event loop");
+                    wait(i % 2 === 0 ? 20 : 80);
+                }
+                compare(offBottomFrames, 0, "No rendered frame may jump away from the bottom");
+            } finally {
+                watchingFollow = false;
+                backend.highlightedText = before;
+                wait(50);
+            }
+        }
         function test_selection_survives_stream_updates() {
             const before = backend.highlightedText;
             follow.checked = false;

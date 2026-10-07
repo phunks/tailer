@@ -225,6 +225,7 @@ ApplicationWindow {
             initial: row.initial,
             capacity: row.capacity,
             filterText: row.filterText,
+            filterEnabled: row.filterEnabled !== false,
             filterRegex: row.filterRegex,
             filterCase: row.filterCase,
             filterInvert: row.filterInvert,
@@ -315,6 +316,7 @@ ApplicationWindow {
             initial: settings.initialLines,
             capacity: settings.capacityMiB,
             filterText: "",
+            filterEnabled: true,
             filterRegex: false,
             filterCase: false,
             filterInvert: false,
@@ -1062,6 +1064,7 @@ ApplicationWindow {
                 initial: sshLines.value,
                 capacity: settings.capacityMiB,
                 filterText: "",
+                filterEnabled: true,
                 filterRegex: false,
                 filterCase: false,
                 filterInvert: false,
@@ -1454,6 +1457,7 @@ ApplicationWindow {
                     required property int capacity
                     required property int index
                     required property string filterText
+                    required property bool filterEnabled
                     required property bool filterRegex
                     required property bool filterCase
                     required property bool filterInvert
@@ -1461,6 +1465,12 @@ ApplicationWindow {
                     property var filterNumeric: JSON.parse(filterNumericJson)
                     function numericFilterCondition() {
                         return filterNumericEnabled.checked ? {capture:filterCapture.value, operator:filterOperator.currentText, value:filterValue.text} : null;
+                    }
+                    function applyFilter() {
+                        backend.set_numeric_filter(filterEnable.checked ? filterInput.text : "",
+                            filterRegex.checked, filterCase.checked,
+                            filterEnable.checked && filterInvert.checked,
+                            filterEnable.checked ? page.numericFilterCondition() : null);
                     }
                     required property string searchText
                     required property bool searchRegex
@@ -1490,11 +1500,17 @@ ApplicationWindow {
                         rules.splice(tagIndex, 1);
                         page.commitTrapRules(rules);
                     }
+                    function setTrapEnabled(tagIndex, enabled) {
+                        const rules = page.trapRules.slice();
+                        rules[tagIndex] = Object.assign({}, rules[tagIndex], {enabled: enabled});
+                        return page.commitTrapRules(rules);
+                    }
                     function editTrap(tagIndex, selectedText = "") {
                         trapEditor.tagIndex = tagIndex;
                         const rule = tagIndex >= 0 ? page.trapRules[tagIndex]
                             : {text: selectedText, regex: false, ignoreCase: false, color: "#35c66b"};
                         editTrapText.text = rule.text;
+                        editTrapEnabled.checked = rule.enabled !== false;
                         editTrapRegex.checked = rule.regex;
                         editTrapCase.checked = rule.ignoreCase;
                         editTrapColor.text = rule.color;
@@ -1518,7 +1534,7 @@ ApplicationWindow {
                             backend.run_local(page.logPath, page.capacity);
                         else
                             backend.open(page.logPath, page.initial, page.capacity);
-                        backend.set_filter(filterInput.text, filterRegex.checked, filterCase.checked, filterInvert.checked);
+                        page.applyFilter();
                         backend.search(searchInput.text, searchRegex.checked, searchCase.checked);
                         backend.set_trap_rules(page.trapRules);
                     }
@@ -1575,6 +1591,12 @@ ApplicationWindow {
                         trapEditor.save();
                         if (page.trapRules[0].text !== "ERROR.*?aaaa" || page.trapRules[0].color !== "#ef5350") return false;
                         if (!backend.highlight_result("ERROR xyz aaaa").includes("color:#ef5350")) return false;
+                        if (!page.setTrapEnabled(0, false)) return false;
+                        page.editTrap(0);
+                        if (editTrapEnabled.checked || backend.highlight_result("ERROR xyz aaaa").includes("color:#ef5350")) return false;
+                        editTrapEnabled.checked = true;
+                        trapEditor.save();
+                        if (!page.trapRules[0].enabled || !backend.highlight_result("ERROR xyz aaaa").includes("color:#ef5350")) return false;
                         selectionMenu.selectedText = "WARN[1]";
                         page.editTrap(-1, selectionMenu.selectedText);
                         if (editTrapText.text !== "WARN[1]" || editTrapRegex.checked) return false;
@@ -1601,6 +1623,7 @@ ApplicationWindow {
                         if (root.restoring || !viewReady)
                             return;
                         logs.setProperty(index, "filterText", filterInput.text);
+                        logs.setProperty(index, "filterEnabled", filterEnable.checked);
                         logs.setProperty(index, "filterRegex", filterRegex.checked);
                         logs.setProperty(index, "filterCase", filterCase.checked);
                         logs.setProperty(index, "filterInvert", filterInvert.checked);
@@ -1623,7 +1646,9 @@ ApplicationWindow {
                                 run_local(page.logPath, page.capacity);
                             else
                                 open(page.logPath, page.initial, page.capacity);
-                            set_numeric_filter(page.filterText, page.filterRegex, page.filterCase, page.filterInvert, page.filterNumeric);
+                            set_numeric_filter(page.filterEnabled ? page.filterText : "", page.filterRegex,
+                                page.filterCase, page.filterEnabled && page.filterInvert,
+                                page.filterEnabled ? page.filterNumeric : null);
                             search(page.searchText, page.searchRegex, page.searchCase);
                             set_trap_rules(page.trapRules);
                         }
@@ -1674,7 +1699,7 @@ ApplicationWindow {
                         onOpened: editTrapText.forceActiveFocus()
                         function save() {
                             const rules = page.trapRules.slice();
-                            const rule = {text: editTrapText.text, regex: editTrapRegex.checked,
+                            const rule = {text: editTrapText.text, enabled: editTrapEnabled.checked, regex: editTrapRegex.checked,
                                 ignoreCase: editTrapCase.checked, color: editTrapColor.text,
                                 numeric:editTrapNumeric.checked ? {capture:editTrapCapture.value, operator:editTrapOperator.currentText, value:editTrapValue.text} : null,
                                 background:editTrapBackground.checked, opacity:editTrapOpacity.value, scope:editTrapScope.codes[editTrapScope.currentIndex]};
@@ -1692,6 +1717,7 @@ ApplicationWindow {
                                 onAccepted: trapEditor.save()
                             }
                             RowLayout {
+                                CheckBox { id: editTrapEnabled; text: root.tr("Enable"); checked: true }
                                 CheckBox { id: editTrapRegex; text: root.tr("Regex") }
                                 CheckBox { id: editTrapCase; text: root.tr("Ignore case") }
                             }
@@ -1891,9 +1917,9 @@ ApplicationWindow {
                                 checked: false
                                 text: {
                                     const active = [];
-                                    if (filterInput.text !== "") active.push(root.tr("Filter enabled"));
+                                    if (filterEnable.checked && filterInput.text !== "") active.push(root.tr("Filter enabled"));
                                     if (backend.results.length > 0) active.push(root.tr("Search results"));
-                                    if (page.trapRules.length > 0) active.push(root.tr("Text trap enabled"));
+                                    if (page.trapRules.some(rule => rule.enabled !== false)) active.push(root.tr("Text trap enabled"));
                                     return (checked ? "▼ " : "▶ ") + root.tr("Options")
                                         + (active.length > 0 ? " (" + active.join(", ") + ")" : "");
                                 }
@@ -1902,6 +1928,12 @@ ApplicationWindow {
                         }
                         RowLayout {
                             id: filterRow
+                            CheckBox {
+                                id: filterEnable
+                                text: root.tr("Enable")
+                                checked: page.filterEnabled
+                                onToggled: { page.saveView(); filterTimer.stop(); page.applyFilter(); }
+                            }
                             visible: optionsToggle.checked
                             TextField {
                                 id: filterInput
@@ -1954,7 +1986,7 @@ ApplicationWindow {
                         Timer {
                             id: filterTimer
                             interval: 300
-                            onTriggered: backend.set_numeric_filter(filterInput.text, filterRegex.checked, filterCase.checked, filterInvert.checked, page.numericFilterCondition())
+                            onTriggered: page.applyFilter()
                         }
                         RowLayout {
                             id: filterNumericRow
@@ -2065,6 +2097,7 @@ ApplicationWindow {
                                     required property int index
                                     Button {
                                         text: (trapTag.modelData.regex ? ".* " : "") + trapTag.modelData.text
+                                        opacity: trapTag.modelData.enabled === false ? 0.45 : 1
                                         width: Math.min(implicitWidth, 220)
                                         contentItem: Label {
                                             text: parent.text
@@ -2076,6 +2109,24 @@ ApplicationWindow {
                                         ToolTip.visible: hovered
                                         ToolTip.text: trapTag.modelData.text
                                         onClicked: page.editTrap(trapTag.index)
+                                        TapHandler {
+                                            acceptedButtons: Qt.RightButton
+                                            onTapped: trapTagMenu.popup()
+                                        }
+                                    }
+                                    Menu {
+                                        id: trapTagMenu
+                                        objectName: "trapTagMenu"
+                                        MenuItem {
+                                            text: root.tr("Enable")
+                                            checkable: true
+                                            checked: trapTag.modelData.enabled !== false
+                                            onTriggered: page.setTrapEnabled(trapTag.index, trapTag.modelData.enabled === false)
+                                        }
+                                        MenuItem {
+                                            text: root.tr("Edit text trap")
+                                            onTriggered: page.editTrap(trapTag.index)
+                                        }
                                     }
                                     ToolButton {
                                         text: "×"
@@ -2105,21 +2156,38 @@ ApplicationWindow {
                                 if (selectionPointer.active || logText.selectionStart !== logText.selectionEnd)
                                     return;
                                 if (appliedText === backend.highlightedText) return;
-                                const y = savedY;
+                                let y = savedY;
                                 const x = savedX;
                                 updatingText = true;
                                 appliedText = backend.highlightedText;
                                 logText.text = appliedText;
+                                // TextArea resets the cursor to the start and ScrollView
+                                // follows it during setText. Restore immediately so that
+                                // position cannot reach a rendered frame or the scrollbar.
+                                if (follow.checked) {
+                                    logText.followEnd();
+                                    // A user can pause follow before the deferred pass.
+                                    y = contentItem.contentY;
+                                    savedY = y;
+                                } else {
+                                    // Paused readers need the same synchronous restoration:
+                                    // waiting for callLater exposes the cursor's jump to zero.
+                                    restoreLogPosition(y, x);
+                                }
                                 Qt.callLater(() => {
-                                    if (follow.checked) logText.followEnd();
-                                    else {
-                                        scroll.contentItem.contentY = Math.max(0, Math.min(y, scroll.contentItem.contentHeight - scroll.contentItem.height));
-                                        scroll.contentItem.contentX = Math.max(0, Math.min(x, scroll.contentItem.contentWidth - scroll.contentItem.width));
-                                    }
+                                    // Reconcile again after deferred layout has settled.
+                                    scroll.restoreLogPosition(y, x);
                                     scroll.updatingText = false;
                                     scroll.savedY = scroll.contentItem.contentY;
                                     scroll.savedX = scroll.contentItem.contentX;
                                 });
+                            }
+                            function restoreLogPosition(y, x) {
+                                if (follow.checked) logText.followEnd();
+                                else {
+                                    contentItem.contentY = Math.max(0, Math.min(y, contentItem.contentHeight - contentItem.height));
+                                    contentItem.contentX = Math.max(0, Math.min(x, contentItem.contentWidth - contentItem.width));
+                                }
                             }
                             Binding {
                                 target: scroll.contentItem

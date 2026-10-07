@@ -89,6 +89,8 @@ been verified on the macOS development machine.
 
 ### Text traps
 
+Use **Enable** beside the filter input to suspend filtering without clearing its expression or numeric options. Right-click a text-trap tag and toggle **Enable** to suspend that tag's detection and highlighting; the same state appears in the trap editor's **Enable** checkbox and is applied on **Save**. Disabled tags are dimmed but remain editable. Enable states and expressions are retained in workspace settings and bookmarks. Older settings default to enabled.
+
 #### Numeric comparisons and background highlights
 
 Both the all-history filter and text-trap editor support an optional **Numeric condition**. Enable **Regex**, enter a pattern such as `.* (\d+)$`, select capture group **1**, operator **>**, and comparison value **100**. For `xxxxxx 200 8 128`, the captured `128` is compared numerically and matches; `100` does not. Supported operators are `>`, `>=`, `<`, `<=`, `==`, and `!=`. Signed numbers, decimals, and scientific notation are supported when the regex captures them (for example `(-?\d+(?:\.\d+)?)$`). Missing/non-numeric captures, NaN, and infinity do not match. Comparisons use finite 64-bit floating-point values, so exact equality is not suitable for arbitrary-precision decimals or very large integers. Filter **Invert** applies after the complete regex/numeric condition. Invalid capture numbers, operators, and comparison values show an error.
@@ -318,6 +320,8 @@ The test uses temporary known-hosts storage and a small `printf` script to verif
 ### GUI integration checks
 
 With Qt's `bin` directory on `PATH` and its runtime libraries configured, run `python3 scripts/test-log-scroll.py` to check wheel scrolling, auto-scroll suspension, and appended logs using the production log-view component with Qt Quick Test.
+
+Run `python3 scripts/test-rule-enable.py` to check filter enable/disable with retained regex/numeric options and repeated right-click trap toggles using the production controls. The smoke test also checks that the trap editor restores and saves the same enable state; Rust tests cover disabled detection/highlighting and persisted workspace/bookmark states.
 
 Run `python3 scripts/test-trap-results.py` to verify selection, right-click selection preservation, and the context button in the production search-result delegate. The two-tab smoke check also exercises tag addition, expression/color editing, invalid-regex rejection, the 10-tag limit, deletion, cancellation, and tab isolation. Rust tests cover multi-rule streaming matches, overlap priority, HTML safety, bounded UTF-8 carry, and legacy settings migration.
 

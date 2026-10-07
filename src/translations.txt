@@ -1,4 +1,5 @@
 # English|Japanese|Simplified Chinese|Traditional Chinese|Korean
+Enable|有効|启用|啟用|활성화
 Numeric condition|数値条件|数值条件|數值條件|숫자 조건
 Capture group|キャプチャ番号|捕获组|擷取群組|캡처 그룹
 Comparison value|比較する値|比较值|比較值|비교 값
