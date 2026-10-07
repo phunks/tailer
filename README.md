@@ -1,7 +1,7 @@
 # Tailer
 A multi-tab log viewer built with Rust, Qt Bridge for Rust, and Qt Quick.
 ![window.png](.github/images/window.png)
-Tailer follows local files, streams logs over SSH, and runs custom commands. Received logs are converted to UTF-8 and archived locally, so display filtering does not discard received history.
+Tailer follows local files, streams logs over SSH, and runs custom commands. Received logs are converted to UTF-8 and kept in a bounded rolling buffer: the last 200,000 lines / 25 MiB per tab. Display remains limited to the last 2,000 lines / 256 KiB (matching lines when filtered). Old logs are discarded automatically without stopping collection.
 
 ## Requirements
 
@@ -83,8 +83,8 @@ been verified on the macOS development machine.
 - Right-click a tab and choose **Register bookmark** to save its current configuration. Use **Bookmarks…** to open or delete saved bookmarks, even after closing the tab or restarting Tailer. Bookmarks preserve the source, SSH connection, encoding, collection limits, filters, searches, auto-scroll, and text traps; passwords are not stored. Opening starts a new collection/archive (custom commands run again), rather than reopening the old archive. Up to 100 bookmarks are supported, and SSH profiles referenced by bookmarks cannot be deleted. Registering an identical configuration again does not create a duplicate; later tab edits do not change existing bookmarks.
 - Registration shows only an **OK** confirmation, without opening the bookmark list. **Bookmarks…** displays a scrollable list: double-click a row to create a tab and close the list, or right-click for **Edit…** / **Delete**. Editing lets you freely name the bookmark (a non-empty title is required); the name is saved separately from its original configuration and used as the new tab's title. Existing tabs are unaffected. Older bookmarks initially use their original tab titles. Open, Edit, and Delete buttons are also available.
 - Bookmarks are organized in a collapsible group tree. **Create group** adds a top-level group; right-click a group to create a subgroup, rename it, open all its logs, or delete it. Edit a bookmark to select its group. Existing and newly registered bookmarks start in **Unclassified**. Double-clicking a group opens all bookmarks in that group and its descendants, then closes the bookmark window. Groups containing custom commands require confirmation before running them again. Group names, nesting, membership, and expansion state are saved; up to 100 groups are supported. Deleting a group also removes its subgroups but preserves their bookmarks in Unclassified.
-- Disabling **Auto-scroll** does not stop reception or archiving. Scrolling away from the bottom disables it for that tab; enable it again to resume following the display.
-- Starting a mouse selection pauses auto-scroll. While dragging or text is selected, the main log document stays stable so new output cannot reset the selection or its anchor. Reception, decoding, archiving, and trap alerts continue; clearing the selection applies the latest display. Enabling **Auto-scroll** clears the selection and resumes the latest output.
+- Disabling **Auto-scroll** does not stop reception, archiving, or appending new displayed logs. The viewport does not jump to the bottom. When older displayed lines are removed, stable source-line IDs anchor the line you are reading at the same screen position, including filtered logs and repeated identical text. New lines remain accessible by scrolling down. If the line at the top of your viewport has itself expired from the displayed window, the document temporarily freezes instead of replacing it under your eyes. The next wheel, scroll-key, scrollbar, or drag operation refreshes the latest display window from offset 0. Filter/search/context changes and reconnection also explicitly refresh it; enabling auto-scroll resumes the latest bottom. Resizing alone does not release an expired snapshot.
+- Starting a mouse selection pauses auto-scroll. While dragging or text is selected, the main log document stays stable so new output cannot reset the selection or its anchor. Reception, decoding, archiving, and trap alerts continue; clearing the selection applies pending output if the displayed anchor still exists, otherwise the snapshot stays frozen until scrolling or an explicit refresh. Enabling **Auto-scroll** clears the selection and resumes the latest output.
 - A green dot indicates newly received logs in an inactive tab. Selecting the tab clears it. Initial data counts as reception, but changing filters or searches does not. Indicators reset on restart.
 
 ### Text traps
@@ -175,6 +175,7 @@ kubectl logs -f deployment/web -n production --all-containers=true
 podman logs -f --tail 50 web
 container logs --follow web
 journalctl -f -u nginx --no-pager
+tcpdump -i eth0 'not port 22'
 ```
 routeros
 ```routeros
@@ -194,7 +195,7 @@ Log-source IDs are persisted as `file`, `docker`, or `custom`. Old tabs without 
 
 Use **Local command…** to enter a script, tab name, and input encoding. Examples: `docker logs -f --tail 50 web` or `podman logs -f web`.
 
-Scripts run through local `/bin/sh -c` without SSH. Pipelines, multiple lines, stdout/stderr capture, decoding, archiving, searching, traps, and storage limits are supported. Initial-line options belong in the script.
+Scripts run through local `/bin/sh -c` without SSH. Pipelines, multiple lines, stdout/stderr capture, decoding, rolling buffers, searching, and traps are supported. Initial-line options belong in the script.
 
 Commands inherit the application's working directory and environment, including `PATH`. If a GUI launch cannot find a tool, use its absolute path or set `PATH` in the script. Interactive stdin is not supported. Closing the tab stops collection but does not guarantee termination of detached descendants.
 
@@ -212,13 +213,13 @@ The PTY/password/marker transport is covered by a Rust test server. Actual produ
 
 ## Collection settings and archives
 
-**Settings…** controls initial lines (default: 50) and capacity (default: 512 MiB per tab). Changes apply to new tabs. SSH tabs can override initial lines when opened; `0` selects newly appended data only.
+**Settings…** controls initial lines (default: 50). Changes apply to new tabs. SSH tabs can override initial lines when opened; `0` selects newly appended data only. Every tab retains at most the last 200,000 lines / 25 MiB, whichever limit is reached first. Display remains bounded to 2,000 lines / 256 KiB. Legacy capacity settings are retained for workspace compatibility but do not size the buffer. Memory and files grow on demand; the full limits are not allocated at tab creation. Total tab memory also includes original bytes, line indexes, allocation slack, and display data; it is not limited to 25 MiB.
 
 Local following runs in Rust with idle polling every 100 ms. It supports initial last-N-line selection, appends, detected truncation, replacement, and temporary path disappearance. Initial selection recognizes UTF-16LE/BE newline code units. Truncation followed by regrowth between polls may be missed, and unread data in a replaced file may be lost.
 
-Received data is decoded and archived before filtering. The archive path is shown in the UI. Unix session directories use `0700`, and archive files use `0600`. Archives may contain sensitive data and remain after closing tabs or the app. Remove unwanted session directories manually.
+Received data is decoded into a bounded memory ring before filtering. Its rolling file path is shown in the UI. Files are appended during normal reception and compacted periodically, not rewritten on every receive. Evicted prefixes can remain temporarily on disk, adding at most approximately 25% to the retained byte limit (UTF-8: 31.25 MiB; original bytes: 125 MiB), excluding transient incoming chunks and re-decoding's temporary file. Filters/searches read only the logical retained memory window, never these stale prefixes. Unix session directories use `0700`, and files use `0600`. These files may contain sensitive data and remain after closing tabs or the app. Remove unwanted session directories manually.
 
-Reaching capacity stops collection without discarding saved history. Excess data is not saved. Disk-full and write errors also stop collection and appear in status messages.
+When the buffer fills, the oldest lines are discarded and collection continues. Byte limits prefer removing whole older lines; a single oversized line keeps its UTF-8-safe suffix. Disk-full and write errors still stop collection and appear in status messages. The original source file is never modified.
 
 ## Workspace persistence
 
@@ -240,18 +241,19 @@ Empty or relative Linux XDG paths fall back to home-directory defaults. Legacy m
 
 The **Options** button beside **Auto-scroll** expands the filter, search, match-summary, and text-trap controls. These controls start collapsed for each tab. Collapsing them preserves their values and does not disable filtering, search results, or text-trap detection. The button indicates configured filters, available search results, and configured traps; query errors remain visible even while collapsed. Expansion state is not saved across restarts.
 
-- Filtering scans the saved archive and displays the most recent matching lines.
+- Filtering scans the full retained 200,000-line / 25 MiB rolling buffer and displays at most the last 2,000 matching lines / 256 KiB. Nonmatching lines stay in this same bounded window so changing the filter does not require reconnecting. A matching line that leaves the normal display can still be found until it is evicted from retention.
 - Literal and regex matching use Rust's `regex`, with Unicode case-insensitive matching and inverted filtering. No external `grep` is used.
 - Patterns support `\d`, `\s`, and lazy quantifiers such as `.*?`. Lookaround and backreferences are unsupported.
 - Regexes are evaluated per line. Syntax differs from the former `grep -E` backend; review saved patterns after migration.
 - **Search** scans history independently of the display filter. It counts matches and retains up to the last 2,000 results / 256 KiB.
+- Incoming search matches are added incrementally without resetting the result list to the first row. Existing result delegates and text selections are preserved on append; when older matches expire, the currently viewed candidate stays at the same screen position if it remains in the results. If that candidate expires or the result set is replaced, the list returns to its beginning.
 - Selecting a result shows ten surrounding lines on each side. **Go live** returns to filtered display.
 - The selected history line has a translucent, theme-colored background, while text-trap matches keep their configured text colors. **Go live** or a new search clears the selection and returns to the normal display (respecting any active filter).
 - Tabs show a persistent red dot while their log source is disconnected, waiting for a connection, or has stopped collecting. Selecting the tab does not clear it. Once collection is active, the dot is hidden unless there are unread updates (green); text-trap alerts blink green. This indicates the log channel/collector state, not just the shared SSH transport state. Automatic reconnection is not implemented.
 - Right-click a tab to **Edit and reconnect…** or **Reconnect / run again**. Editing updates the existing tab, preserving filter/search/trap settings. A new archive is created; previous archives remain on disk. Commands execute again. Shared SSH host/user/key settings are edited separately under **Connections…**.
 - Exception: changing only the encoding (and optionally the tab title) reinterprets the current session's original received bytes without reconnecting or rerunning commands. The × button asks for confirmation; Cancel and Escape leave the tab open. When auto-scroll is off, incoming logs preserve the current scroll offset.
-- Older archived lines remain searchable even when no longer visible. Paging beyond the retained result limit is not implemented.
-- Background workers process searches, not the UI thread. Reception updates currently rescan archives, so large histories can take time.
+- Evicted lines are no longer searchable. Result line numbers remain stable while older lines are evicted; selecting an evicted result cannot recover it.
+- Background workers process searches, not the UI thread. Reception updates scan only the bounded buffer.
 
 Example filter for GET requests with selected HTTP status codes:
 
@@ -267,13 +269,13 @@ Choose encoding when opening SSH logs or from the toolbar for new local logs. UT
 
 Supported encodings: UTF-8, CP932, EUC-JP, ISO-2022-JP, UTF-16LE, UTF-16BE, GB18030, BIG5, CP949, WINDOWS-1252, and ISO-8859-1.
 
-`encoding_rs` converts incrementally across receive boundaries. CP932 uses the WHATWG Shift_JIS mapping and CP949 uses EUC-KR. ISO-8859-1 uses exact Latin-1, separately from Windows-1252. No external `iconv` is required. Converted UTF-8 is archived alongside private original-byte data for re-decoding; authentication responses are excluded. The UTF-8 capacity is unchanged; original bytes are additionally bounded to four times that capacity. Re-decoding uses a temporary file (up to the UTF-8 capacity), so disk usage increases. Filters, searches, and traps use UTF-8. Archives made before original-byte preservation cannot recover malformed input. Re-decoding is limited to the current session, and fails without replacing its UTF-8 archive if the converted data exceeds capacity. OS locale does not control matching.
+`encoding_rs` converts incrementally across receive boundaries. CP932 uses the WHATWG Shift_JIS mapping and CP949 uses EUC-KR. ISO-8859-1 uses exact Latin-1, separately from Windows-1252. No external `iconv` is required. Converted UTF-8 uses a rolling window alongside private original-byte data for re-decoding; authentication responses are excluded. Original bytes also roll over, bounded to 200,000 lines and 100 MiB (four times the UTF-8 byte limit). Re-decoding reads the logical original-byte ring, uses a bounded temporary file, and discards overflow rather than stopping collection. Filters, searches, and traps use UTF-8. Re-decoding is limited to the retained current-session bytes. Starting a replay after eviction can lose multibyte/ISO-2022-JP shift state at its first boundary; the live decoder preserves its state during eviction. OS locale does not control matching.
 
 Malformed input and incomplete characters at stream finalization are replaced and counted in status messages. Encoding selection does not change `LANG`; escalation wrappers use `LC_ALL=C`.
 
 Starting ISO-2022-JP partway through a file may lose shift state. Remote `tail` does not interpret encodings; adjust remote commands for UTF-16 or other affected formats.
 
-Display is limited to 2,000 lines / 256 KiB. Full received content is archived within capacity, but very long displayed lines are truncated. Search decoding is also limited to 256 KiB per line: omitted suffixes are not matched, and end anchors use the truncated representation. The UI polls background results every 250 ms.
+UTF-8 retention is limited to 200,000 lines / 25 MiB; display and search results remain limited to 2,000 lines / 256 KiB. There is no unbounded full-history archive. Very long retained lines keep their latest UTF-8-safe suffix after byte-limit eviction. Filter/search line decoding is bounded to 256 KiB per line, and omitted suffixes are not matched. Traps process new input even when it is subsequently evicted. The UI polls background results every 250 ms. Auto-scroll OFF continues displaying appended logs while anchoring the viewport; only expiration of the viewed line freezes the document until the next scroll refresh. Paging is not implemented. Previously created full-history archives are not automatically deleted.
 
 ## Display languages
 

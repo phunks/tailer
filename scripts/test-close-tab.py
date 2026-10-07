@@ -10,6 +10,8 @@ start = source.rindex("    Dialog {", 0, source.index("        id: closeTabDialo
 end = source.index("\n    Dialog {", start + 1)
 tabs_start = source.index("        TabBar {\n            id: tabs")
 tabs_end = source.index("\n        Label {", tabs_start)
+close_tabs_start = source.index("    function closeTabs(")
+close_tabs_end = source.index("\n    function restartTab(", close_tabs_start)
 fixture = """
 import QtQuick
 import QtQuick.Controls.Fusion
@@ -21,14 +23,18 @@ Item {
     width: 800; height: 600
     property int closed: 0
     property int closedIndex: -1
+    property bool movingTab: false
     function tr(key) { return key; }
     function translateButtons(dialog) {}
     function scheduleSave() {}
     function restartTab(index) {}
+    function registerBookmark(index) {}
+    function dropTab(from, sceneX, sceneY) {}
     function closeTab(index) { closedIndex = index; closed++; logs.remove(index); }
     QtObject { id: editTabDialog; function edit(index) {} }
     ListModel { id: logs }
-""" + source[start:end] + """
+    ListModel { id: bookmarks }
+""" + source[close_tabs_start:close_tabs_end] + source[start:end] + """
     ColumnLayout {
         anchors.fill: parent
 """ + source[tabs_start:tabs_end] + """
@@ -36,7 +42,10 @@ Item {
     TabButton {
         id: baseline
         visible: false
+        rightPadding: 36
+        background: Rectangle { implicitHeight: 21 }
         contentItem: RowLayout {
+            spacing: 6
             Label { text: "First" }
             Rectangle { implicitWidth: 8; implicitHeight: 8 }
         }
@@ -57,7 +66,7 @@ Item {
         function test_appearance() {
             const first = tabRepeater.itemAt(0);
             const second = tabRepeater.itemAt(1);
-            compare(first.height, baseline.implicitHeight + 3);
+            compare(first.height, baseline.implicitHeight + 6);
             compare(second.height, first.height);
             compare(first.background.color.toString(), Qt.lighter(first.palette.button, 1.50).toString());
             verify(first.background.color.toString() !== second.background.color.toString());
@@ -105,6 +114,41 @@ Item {
             tryCompare(closeTabDialog, "opened", true);
             mouseClick(closeTabDialog.standardButton(Dialog.Ok));
             tryCompare(root, "closed", 1);
+        }
+        function test_close_multiple_data() {
+            return [
+                {tag: "others", mode: "others", title: "Close other tabs?", remaining: 1, closed: 2},
+                {tag: "all", mode: "all", title: "Close all tabs?", remaining: 0, closed: 3}
+            ];
+        }
+        function test_close_multiple(data) {
+            logs.append({logTitle: "Third", unread: false, alert: false});
+            closeTabDialog.requestClose(1, data.mode);
+            tryCompare(closeTabDialog, "opened", true);
+            compare(closeTabDialog.title, data.title);
+            compare(closeTabDialog.closeMode, data.mode);
+            compare(root.closed, 0);
+            mouseClick(closeTabDialog.standardButton(Dialog.Cancel));
+            tryCompare(closeTabDialog, "visible", false);
+            compare(root.closed, 0);
+            compare(logs.count, 3);
+
+            closeTabDialog.requestClose(1, data.mode);
+            tryCompare(closeTabDialog, "opened", true);
+            mouseClick(closeTabDialog.standardButton(Dialog.Ok));
+            tryCompare(root, "closed", data.closed);
+            compare(logs.count, data.remaining);
+            if (data.mode === "others") {
+                compare(logs.get(0).logTitle, "Second");
+                // A subsequent single-close request must not reuse the bulk mode.
+                closeTabDialog.requestClose(0);
+                tryCompare(closeTabDialog, "opened", true);
+                compare(closeTabDialog.closeMode, "single");
+                compare(closeTabDialog.title, "Close log tab?");
+                mouseClick(closeTabDialog.standardButton(Dialog.Ok));
+                tryCompare(root, "closed", 3);
+                compare(logs.count, 0);
+            }
         }
     }
 }

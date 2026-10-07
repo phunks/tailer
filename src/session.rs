@@ -15,6 +15,7 @@ use std::time::Duration;
 #[derive(Clone, Default)]
 pub struct View {
     pub text: String,
+    pub line_ids: Vec<usize>,
     pub results: Value,
     pub summary: String,
     pub generation: u64,
@@ -32,6 +33,7 @@ struct Shared {
     stop: AtomicBool,
     connected: AtomicBool,
     revision: AtomicU64,
+    view_active: AtomicBool,
     received_bytes: AtomicU64,
     encoding_errors: AtomicU64,
     trap: Mutex<crate::trap::Trap>,
@@ -53,6 +55,12 @@ struct RawStream {
     limit: u64,
     encoding: String,
     resets: Vec<u64>,
+    text: history::Ring,
+    first_line: usize,
+    original: history::Ring,
+    original_first_line: usize,
+    text_discarded: usize,
+    original_discarded: usize,
 }
 
 pub struct Session {
@@ -579,6 +587,17 @@ impl Session {
     pub fn view(&self) -> Option<View> {
         self.shared.view.lock().unwrap().take()
     }
+    pub fn set_view_active(&self, active: bool) {
+        // Serialize with publication so a suspended tab cannot retain a stale
+        // pending view. Reception and query state remain independent.
+        let mut view = self.shared.view.lock().unwrap();
+        if self.shared.view_active.swap(active, Ordering::AcqRel) != active {
+            *view = None;
+            if active {
+                self.shared.revision.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
     pub fn received_bytes(&self) -> u64 {
         self.shared.received_bytes.load(Ordering::Relaxed)
     }
@@ -590,9 +609,10 @@ impl Session {
         let mut decoder = crate::encoding::Decoder::new(encoding)?;
         let mut output = private_file(&self.path.with_extension("redecode"))?;
         let result = (|| -> io::Result<()> {
-            let mut written = 0u64;
-            if let Some(path) = &raw.path {
-                let mut input = File::open(path)?;
+            let mut text_window = history::Ring::default();
+            let mut first_line = raw.original_first_line;
+            if raw.path.is_some() {
+                let mut input = raw.original.reader();
                 let mut buffer = [0; 64 * 1024];
                 let mut position = 0;
                 for (segment, boundary) in raw
@@ -610,22 +630,46 @@ impl Session {
                         }
                         position += count as u64;
                         let text = decoder.decode(&buffer[..count], false)?;
-                        write_redecoded(&mut output, &text, &mut written, raw.limit)?;
+                        first_line += text_window
+                            .append(
+                                text.as_bytes(),
+                                raw.limit as usize,
+                                history::RETAIN_LINES,
+                                "UTF-8",
+                            )
+                            .1;
                     }
                     if segment < raw.resets.len() {
                         let text = decoder.decode(&[], true)?;
-                        write_redecoded(&mut output, &text, &mut written, raw.limit)?;
+                        first_line += text_window
+                            .append(
+                                text.as_bytes(),
+                                raw.limit as usize,
+                                history::RETAIN_LINES,
+                                "UTF-8",
+                            )
+                            .1;
                         decoder = crate::encoding::Decoder::new(encoding)?;
                     }
                 }
             }
             if raw.finished {
                 let text = decoder.decode(&[], true)?;
-                write_redecoded(&mut output, &text, &mut written, raw.limit)?;
+                first_line += text_window
+                    .append(
+                        text.as_bytes(),
+                        raw.limit as usize,
+                        history::RETAIN_LINES,
+                        "UTF-8",
+                    )
+                    .1;
             }
+            text_window.write_to(&mut output)?;
             output.flush()?;
             fs::copy(self.path.with_extension("redecode"), &self.path)?;
-            self.shared.received_bytes.store(written, Ordering::Relaxed);
+            raw.text = text_window;
+            raw.first_line = first_line;
+            raw.text_discarded = 0;
             self.shared
                 .encoding_errors
                 .store(decoder.errors, Ordering::Relaxed);
@@ -699,7 +743,13 @@ fn initialize_raw(
     *state.raw.lock().unwrap() = RawStream {
         path: Some(raw_path),
         decoder: Some(decoder),
-        limit,
+        // Legacy MiB settings no longer size the ring. Tiny limits are useful
+        // for regression tests of byte-boundary eviction.
+        limit: if limit < 1024 * 1024 {
+            limit
+        } else {
+            history::RETAIN_BYTES as u64
+        },
         encoding: encoding.to_owned(),
         ..RawStream::default()
     };
@@ -709,39 +759,46 @@ fn initialize_raw(
 fn reset_raw_decoder(state: &Shared, archive: &mut File) -> io::Result<()> {
     let mut raw = state.raw.lock().unwrap();
     let text = raw.decoder.as_mut().unwrap().decode(&[], true)?;
-    let mut bytes = archive.seek(SeekFrom::End(0))?;
-    retain_received(state, archive, &mut bytes, raw.limit, &text)?;
+    retain_received(state, archive, &mut raw, &text)?;
     let offset = raw.bytes;
-    raw.resets.push(offset);
-    raw.decoder = Some(crate::encoding::Decoder::new(&raw.encoding)?);
-    Ok(())
-}
-
-fn write_redecoded(output: &mut File, text: &str, written: &mut u64, limit: u64) -> io::Result<()> {
-    if text.len() as u64 > limit.saturating_sub(*written) {
-        return Err(io::Error::other(
-            "Storage limit reached. Collection stopped; history is retained.",
-        ));
+    if raw.resets.last() != Some(&offset) {
+        raw.resets.push(offset);
     }
-    output.write_all(text.as_bytes())?;
-    *written += text.len() as u64;
+    raw.decoder = Some(crate::encoding::Decoder::new(&raw.encoding)?);
     Ok(())
 }
 
 fn receive_raw(state: &Shared, archive: &mut File, input: &[u8], finished: bool) -> io::Result<()> {
     let mut raw = state.raw.lock().unwrap();
-    let retained = input
-        .len()
-        .min(raw.limit.saturating_mul(4).saturating_sub(raw.bytes) as usize);
-    let truncated = retained < input.len();
-    let input = &input[..retained];
+    let original_limit = raw.limit as usize * 4;
+    let encoding = raw.encoding.clone();
+    let (discarded, lines) =
+        raw.original
+            .append(input, original_limit, history::RETAIN_LINES, &encoding);
+    raw.original_first_line += lines;
+    raw.original_discarded += discarded;
+    raw.resets = raw
+        .resets
+        .iter()
+        .filter_map(|&offset| offset.checked_sub(discarded as u64))
+        .filter(|&offset| offset > 0)
+        .collect();
+    raw.bytes = raw.original.len() as u64;
     if let Some(path) = &raw.path {
-        OpenOptions::new()
-            .append(true)
-            .open(path)?
-            .write_all(input)?;
+        let mut file = OpenOptions::new().write(true).open(path)?;
+        file.seek(SeekFrom::End(0))?;
+        file.write_all(input)?;
+        if should_compact(
+            raw.original_discarded,
+            raw.original.len(),
+            raw.limit as usize * 4,
+        ) {
+            file.seek(SeekFrom::Start(0))?;
+            raw.original.write_to(&mut file)?;
+            file.set_len(raw.original.len() as u64)?;
+            raw.original_discarded = 0;
+        }
     }
-    raw.bytes += input.len() as u64;
     let decoder = raw
         .decoder
         .as_mut()
@@ -751,14 +808,14 @@ fn receive_raw(state: &Shared, archive: &mut File, input: &[u8], finished: bool)
         .encoding_errors
         .store(decoder.errors, Ordering::Relaxed);
     raw.finished = finished;
-    let mut bytes = archive.seek(SeekFrom::End(0))?;
-    retain_received(state, archive, &mut bytes, raw.limit, &text)?;
-    if truncated {
-        return Err(io::Error::other(
-            "Storage limit reached. Collection stopped; history is retained.",
-        ));
-    }
+    retain_received(state, archive, &mut raw, &text)?;
     Ok(())
+}
+
+/// Amortize rewrites while bounding stale disk data to at most 25% of
+/// the byte limit (and usually 25% of the retained data for short lines).
+fn should_compact(discarded: usize, retained: usize, limit: usize) -> bool {
+    discarded > 0 && discarded >= (retained.min(limit) / 4).max(1)
 }
 
 impl Drop for Session {
@@ -819,6 +876,7 @@ fn new_shared(child: Option<Child>) -> Arc<Shared> {
         stop: AtomicBool::new(false),
         connected: AtomicBool::new(child.is_some()),
         revision: AtomicU64::new(1),
+        view_active: AtomicBool::new(true),
         generation: AtomicU64::new(0),
         query: Mutex::new(Query::default()),
         received_bytes: AtomicU64::new(0),
@@ -835,31 +893,31 @@ fn new_shared(child: Option<Child>) -> Arc<Shared> {
 fn retain_received(
     state: &Shared,
     archive: &mut File,
-    bytes: &mut u64,
-    limit: u64,
+    raw: &mut RawStream,
     data: &str,
 ) -> io::Result<()> {
-    let mut retained = data.len().min(limit.saturating_sub(*bytes) as usize);
-    while !data.is_char_boundary(retained) {
-        retained -= 1;
+    let (discarded, lines) = raw.text.append(
+        data.as_bytes(),
+        raw.limit as usize,
+        history::RETAIN_LINES,
+        "UTF-8",
+    );
+    raw.first_line += lines;
+    raw.text_discarded += discarded;
+    archive.seek(SeekFrom::End(0))?;
+    archive.write_all(data.as_bytes())?;
+    if should_compact(raw.text_discarded, raw.text.len(), raw.limit as usize) {
+        archive.seek(SeekFrom::Start(0))?;
+        raw.text.write_to(archive)?;
+        archive.set_len(raw.text.len() as u64)?;
+        raw.text_discarded = 0;
     }
-    archive.write_all(&data.as_bytes()[..retained])?;
-    state
-        .trap
-        .lock()
-        .unwrap()
-        .receive(&data.as_bytes()[..retained]);
-    *bytes += retained as u64;
+    state.trap.lock().unwrap().receive(data.as_bytes());
     state
         .received_bytes
-        .fetch_add(retained as u64, Ordering::Relaxed);
+        .fetch_add(data.len() as u64, Ordering::Relaxed);
     state.revision.fetch_add(1, Ordering::Relaxed);
-    if retained < data.len() {
-        return Err(io::Error::other(
-            "Storage limit reached. Collection stopped; history is retained.",
-        ));
-    }
-    *state.status.lock().unwrap() = format!("Following · Saved {} KiB", *bytes / 1024);
+    *state.status.lock().unwrap() = format!("Following · Buffered {} KiB", raw.text.len() / 1024);
     Ok(())
 }
 
@@ -870,11 +928,14 @@ fn spawn_history_worker(shared: &Arc<Shared>, path: &Path) {
         let mut last = 0;
         while !state.stop.load(Ordering::Relaxed) {
             let revision = state.revision.load(Ordering::Relaxed);
-            if last != revision {
+            if state.view_active.load(Ordering::Acquire) && last != revision {
                 let query = state.query.lock().unwrap().clone();
                 let view = make_view(&history_path, &query, &state);
-                if state.generation.load(Ordering::Relaxed) == query.generation {
-                    *state.view.lock().unwrap() = Some(view);
+                let mut pending = state.view.lock().unwrap();
+                if state.view_active.load(Ordering::Acquire)
+                    && state.generation.load(Ordering::Relaxed) == query.generation
+                {
+                    *pending = Some(view);
                 }
                 last = revision;
             }
@@ -883,8 +944,8 @@ fn spawn_history_worker(shared: &Arc<Shared>, path: &Path) {
     });
 }
 
-fn make_view(path: &Path, query: &Query, state: &Shared) -> View {
-    let _raw = state.raw.lock().unwrap();
+fn make_view(_path: &Path, query: &Query, state: &Shared) -> View {
+    let raw = state.raw.lock().unwrap();
     let result = (|| -> Result<View, String> {
         let mut view = View {
             generation: query.generation,
@@ -892,38 +953,59 @@ fn make_view(path: &Path, query: &Query, state: &Shared) -> View {
             ..View::default()
         };
         if let Some(target) = query.context {
-            view.text = history::context(path, target).map_err(|e| e.to_string())?;
+            view.text = history::context_reader(raw.text.reader(), target, raw.first_line)
+                .map_err(|e| e.to_string())?;
             view.summary = format!("Context around history line {target} (without filtering)");
+        } else if query.filter.text.is_empty()
+            && !query.filter.invert
+            && query.filter.numeric.is_null()
+        {
+            view.text = raw.text.preview();
+            let count = view.text.lines().count();
+            let end = raw.first_line + raw.text.lines();
+            view.line_ids = (end.saturating_sub(count) + 1..=end).collect();
+            view.summary = format!(
+                "Buffered {} lines · Last 2,000 lines / 256KiB maximum",
+                raw.text.lines()
+            );
         } else {
-            let matched = history::scan(
-                path,
+            let matched = history::scan_reader(
+                raw.text.reader(),
                 &query.filter,
                 &state.stop,
                 &state.generation,
                 query.generation,
+                raw.first_line,
             )?;
             for (_, line) in &matched.lines {
                 view.text.push_str(line);
                 view.text.push('\n');
             }
             history::trim_text(&mut view.text);
+            view.line_ids = matched
+                .lines
+                .iter()
+                .rev()
+                .take(view.text.lines().count())
+                .map(|(number, _)| *number)
+                .collect();
+            view.line_ids.reverse();
             view.summary = format!(
-                "Filter matched {} lines · Showing up to the last 2,000 lines / 256KiB",
+                "Filter matched {} lines · Last 2,000 lines / 256KiB maximum",
                 matched.count
             );
         }
         if !query.search.text.is_empty() {
-            let matches = history::scan(
-                path,
+            let matches = history::scan_reader(
+                raw.text.reader(),
                 &query.search,
                 &state.stop,
                 &state.generation,
                 query.generation,
+                raw.first_line,
             )?;
-            view.summary.push_str(&format!(
-                " · History search: {} matches (last 2,000 results maximum)",
-                matches.count
-            ));
+            view.summary
+                .push_str(&format!(" · Buffer search: {} matches", matches.count));
             view.results = Value::Array(
                 matches
                     .lines
@@ -1124,7 +1206,7 @@ mod tests {
     }
 
     #[test]
-    fn native_local_decodes_split_input_and_enforces_capacity() {
+    fn native_local_decodes_split_input_and_keeps_collecting_when_full() {
         let directory = create_directory().unwrap();
         let source = directory.join("encoded.log");
         fs::write(&source, b"old\n").unwrap();
@@ -1136,15 +1218,12 @@ mod tests {
         output.write_all(&[0xfa, b'\n']).unwrap();
         wait_for_archive(&session, "日\n");
         output.write_all(b"overflow\n").unwrap();
-        for _ in 0..150 {
-            if session.status().contains("Storage limit") {
-                break;
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-        assert!(session.status().contains("Storage limit"));
-        assert_eq!(session.received_bytes(), 4);
-        wait_for_archive(&session, "日\n");
+        wait_for_archive(&session, "low\n");
+        assert!(session.is_connected());
+        assert_eq!(session.received_bytes(), 13);
+        output.write_all(b"next\n").unwrap();
+        wait_for_archive(&session, "ext\n");
+        assert!(session.is_connected());
         let archive = session.path.clone();
         drop(session);
         drop(output);
@@ -1368,18 +1447,18 @@ mod tests {
     }
 
     #[test]
-    fn conversion_capacity_stops_at_utf8_character_boundary() {
+    fn conversion_ring_keeps_utf8_character_boundary() {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", "printf '\\223\\372\\226\\173\\214\\352\\n'"]);
         let session = Session::start_encoded(command, 5, None, "CP932").unwrap();
         for _ in 0..150 {
-            if session.status().contains("Storage limit") {
+            if session.status().contains("Connection ended") {
                 break;
             }
             thread::sleep(Duration::from_millis(20));
         }
-        assert!(session.status().contains("Storage limit"));
-        assert_eq!(fs::read_to_string(&session.path).unwrap(), "日");
+        assert!(session.status().contains("Connection ended"));
+        assert_eq!(fs::read_to_string(&session.path).unwrap(), "語\n");
         let archive = session.path.clone();
         drop(session);
         fs::remove_dir_all(archive.parent().unwrap()).unwrap();
@@ -1550,7 +1629,65 @@ mod tests {
         assert!(crate::ssh::validate(&options).is_err());
     }
     #[test]
-    fn session_preserves_old_history_filters_searches_and_stops() {
+    fn inactive_view_preserves_reception_traps_and_queries_then_refreshes_once() {
+        let dir = create_directory().unwrap();
+        let source = dir.join("source.log");
+        fs::write(&source, "initial\n").unwrap();
+        let session = Session::local(source.display().to_string(), 1, 1024 * 1024).unwrap();
+        wait_for_archive(&session, "initial\n");
+        session.set_view_active(false);
+        session.set_trap("ERROR".into(), false);
+        let generation = session.query(Query {
+            filter: pattern("ERROR".into(), false, false, false),
+            search: pattern("ERROR".into(), false, false, false),
+            ..Query::default()
+        });
+        OpenOptions::new()
+            .append(true)
+            .open(&source)
+            .unwrap()
+            .write_all(b"info\nERROR hidden\n")
+            .unwrap();
+        wait_for_archive(&session, "initial\ninfo\nERROR hidden\n");
+        thread::sleep(Duration::from_millis(600));
+        assert!(session.is_connected());
+        assert!(session.received_bytes() > 0);
+        assert_eq!(session.trap_hits(), 1);
+        assert!(
+            session.view().is_none(),
+            "Hidden tabs must not publish views"
+        );
+
+        session.set_view_active(true);
+        let mut refreshed = None;
+        for _ in 0..100 {
+            if let Some(view) = session.view() {
+                refreshed = Some(view);
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        let view = refreshed.expect("Reactivated tab must refresh without new input");
+        assert_eq!(view.generation, generation);
+        assert_eq!(view.text, "ERROR hidden\n");
+        assert_eq!(view.results.as_array().unwrap().len(), 1);
+        thread::sleep(Duration::from_millis(600));
+        assert!(
+            session.view().is_none(),
+            "Unchanged views refresh only once"
+        );
+
+        // A redundant activation must not trigger another expensive refresh.
+        session.set_view_active(true);
+        thread::sleep(Duration::from_millis(350));
+        assert!(session.view().is_none());
+        drop(session);
+        thread::sleep(Duration::from_millis(300));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn session_retains_offscreen_history_filters_searches_and_stops() {
         let dir = create_directory().unwrap();
         let source = dir.join("source.log");
         fs::write(&source, "before\nERROR old\ninfo\n").unwrap();
@@ -1587,9 +1724,7 @@ mod tests {
             ..Query::default()
         });
         let received = session.received_bytes();
-        let view = await_view(&session, generation, |view| {
-            view.results.as_array().is_some_and(|a| !a.is_empty())
-        });
+        let view = await_view(&session, generation, |view| view.error.is_empty());
         assert!(view.text.contains("ERROR old"));
         assert_eq!(session.received_bytes(), received);
         assert!(received > 0);
@@ -1606,15 +1741,13 @@ mod tests {
         let view = await_view(&session, generation, |view| view.text.contains("new"));
         assert!(!view.text.contains("ERROR"));
         let generation = session.query(Query {
-            context: Some(1),
+            context: Some(2502),
             ..Query::default()
         });
         assert!(
-            await_view(&session, generation, |view| view
+            await_view(&session, generation, |view| view.text.contains("2502: new"))
                 .text
-                .contains("1: ERROR old"))
-            .text
-            .contains("2: info")
+                .contains("2501: new")
         );
         let generation = session.query(Query {
             filter: pattern("[".into(), true, false, false),
@@ -1644,22 +1777,216 @@ mod tests {
     }
 
     #[test]
-    fn capacity_limit_stops_without_discarding_saved_history() {
+    fn capacity_limit_discards_old_data_and_continues() {
         let dir = create_directory().unwrap();
         let source = dir.join("source.log");
         fs::write(&source, b"1234567890\n").unwrap();
         let session = Session::local(source.display().to_string(), 50, 5).unwrap();
-        for _ in 0..100 {
-            if session.status().contains("Storage limit") {
-                break;
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-        assert!(session.status().contains("Storage limit"));
-        assert_eq!(fs::read(&session.path).unwrap(), b"12345");
+        wait_for_archive(&session, "7890\n");
+        assert!(session.is_connected());
+        OpenOptions::new()
+            .append(true)
+            .open(&source)
+            .unwrap()
+            .write_all(b"new\n")
+            .unwrap();
+        wait_for_archive(&session, "new\n");
+        assert!(session.is_connected());
         let archive = session.path.clone();
         drop(session);
         fs::remove_dir_all(archive.parent().unwrap()).unwrap();
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn ring_bounds_text_and_original_bytes_and_preserves_search_line_numbers() {
+        let directory = create_directory().unwrap();
+        let path = directory.join("received.log");
+        let mut archive = private_file(&path).unwrap();
+        let state = new_shared(None);
+        initialize_raw(
+            &state,
+            &path,
+            crate::encoding::Decoder::new("UTF-8").unwrap(),
+            512 * 1024 * 1024,
+            "UTF-8",
+        )
+        .unwrap();
+        for i in 1..=5000 {
+            receive_raw(
+                &state,
+                &mut archive,
+                format!("line {i}\n").as_bytes(),
+                false,
+            )
+            .unwrap();
+        }
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(text.lines().count(), 5000);
+        assert!(text.starts_with("line 1\n"));
+        let view = make_view(
+            &path,
+            &Query {
+                search: pattern("line 5000".into(), false, false, false),
+                ..Query::default()
+            },
+            &state,
+        );
+        assert!(view.summary.starts_with("Buffered 5000 lines"));
+        assert_eq!(view.text.lines().count(), history::DISPLAY_LINES);
+        assert!(view.text.starts_with("line 3001\n"));
+        assert_eq!(view.line_ids.first(), Some(&3001));
+        assert_eq!(view.line_ids.last(), Some(&5000));
+        let filtered = make_view(
+            &path,
+            &Query {
+                filter: pattern("line (?:1|3000|5000)$".into(), true, false, false),
+                ..Query::default()
+            },
+            &state,
+        );
+        assert_eq!(filtered.line_ids, vec![1, 3000, 5000]);
+        assert_eq!(view.results[0]["line"], 5000);
+        let context = make_view(
+            &path,
+            &Query {
+                context: Some(5000),
+                ..Query::default()
+            },
+            &state,
+        );
+        assert!(context.text.contains("5000: line 5000"));
+        assert_eq!(
+            fs::read_to_string(path.with_extension("raw"))
+                .unwrap()
+                .lines()
+                .count(),
+            5000
+        );
+        receive_raw(
+            &state,
+            &mut archive,
+            "あ".repeat(history::RETAIN_BYTES / 3 + 100).as_bytes(),
+            false,
+        )
+        .unwrap();
+        assert!(state.raw.lock().unwrap().text.len() <= history::RETAIN_BYTES);
+        assert!(fs::metadata(&path).unwrap().len() <= (history::RETAIN_BYTES * 5 / 4) as u64);
+        assert!(
+            fs::metadata(path.with_extension("raw")).unwrap().len()
+                <= (history::RETAIN_BYTES * 5) as u64
+        );
+        assert!(fs::read_to_string(&path).unwrap().is_char_boundary(0));
+        drop(archive);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn ring_evicts_at_retention_limit_without_rewriting_each_receive() {
+        let directory = create_directory().unwrap();
+        let path = directory.join("received.log");
+        let mut archive = private_file(&path).unwrap();
+        let state = new_shared(None);
+        initialize_raw(
+            &state,
+            &path,
+            crate::encoding::Decoder::new("UTF-8").unwrap(),
+            512 * 1024 * 1024,
+            "UTF-8",
+        )
+        .unwrap();
+        let input = format!(
+            "ERROR old\n{}",
+            "normal\n".repeat(history::RETAIN_LINES - 1)
+        );
+        receive_raw(&state, &mut archive, input.as_bytes(), false).unwrap();
+        receive_raw(&state, &mut archive, b"ERROR new\n", false).unwrap();
+        // Disk appends without rewriting the retained megabyte for every line.
+        assert!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .starts_with("ERROR old\n")
+        );
+        let view = make_view(
+            &path,
+            &Query {
+                filter: pattern("ERROR".into(), false, false, false),
+                search: pattern("ERROR".into(), false, false, false),
+                ..Query::default()
+            },
+            &state,
+        );
+        assert_eq!(view.text, "ERROR new\n");
+        assert_eq!(view.line_ids, vec![history::RETAIN_LINES + 1]);
+        assert_eq!(view.results.as_array().unwrap().len(), 1);
+        assert_eq!(view.results[0]["line"], history::RETAIN_LINES + 1);
+        let extra = "tail\n".repeat(80_000);
+        receive_raw(&state, &mut archive, extra.as_bytes(), false).unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("ERROR old"));
+        let raw = state.raw.lock().unwrap();
+        assert_eq!(raw.text.lines(), history::RETAIN_LINES);
+        assert!(raw.text_discarded < raw.text.len() / 4);
+        assert_eq!(raw.original.lines(), history::RETAIN_LINES);
+        drop(raw);
+        drop(archive);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn encoding_change_after_eviction_keeps_only_recent_lines_and_live_decoding() {
+        let directory = create_directory().unwrap();
+        let source = directory.join("encoded.log");
+        let count = history::RETAIN_LINES + 200;
+        let mut bytes = b"old\n".repeat(count);
+        bytes.extend_from_slice(b"\x93\xfa\x96\x7b\n");
+        fs::write(&source, bytes).unwrap();
+        let session = Session::local_encoded(
+            source.display().to_string(),
+            (count + 1) as u32,
+            1024 * 1024,
+            "UTF-8",
+        )
+        .unwrap();
+        for _ in 0..150 {
+            if session.shared.raw.lock().unwrap().first_line > 0 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        session.change_encoding("CP932").unwrap();
+        let text = fs::read_to_string(&session.path).unwrap();
+        assert_eq!(
+            session.shared.raw.lock().unwrap().text.lines(),
+            history::RETAIN_LINES
+        );
+        assert!(text.ends_with("日本\n"));
+        let view = make_view(
+            &session.path,
+            &Query {
+                search: pattern("日本".into(), false, false, false),
+                ..Query::default()
+            },
+            &session.shared,
+        );
+        assert_eq!(view.results[0]["line"], count + 1);
+        OpenOptions::new()
+            .append(true)
+            .open(&source)
+            .unwrap()
+            .write_all(b"\x93\xfa\n")
+            .unwrap();
+        for _ in 0..150 {
+            if fs::read_to_string(&session.path).unwrap().ends_with("日\n") {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(fs::read_to_string(&session.path).unwrap().ends_with("日\n"));
+        assert!(session.is_connected());
+        let archive = session.path.clone();
+        drop(session);
+        thread::sleep(Duration::from_millis(300));
+        fs::remove_dir_all(archive.parent().unwrap()).unwrap();
+        fs::remove_dir_all(directory).unwrap();
     }
 }

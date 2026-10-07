@@ -812,8 +812,8 @@ ApplicationWindow {
                 Label { text: root.tr("Initial tail lines") }
                 SpinBox { id: editInitial; from: 0; to: 1000000; editable: true }
             }
-            Label { text: root.tr("Storage limit in MiB per tab (stops when reached)") }
-            SpinBox { id: editCapacity; from: 1; to: 10240; editable: true }
+            Label { text: root.tr("Ring buffer: last 200,000 lines / 25MiB. Display: last 2,000 lines / 256KiB. Collection continues when full."); wrapMode: Text.WordWrap; Layout.fillWidth: true }
+            SpinBox { id: editCapacity; visible: false; from: 1; to: 10240 }
             Label { text: root.tr("Reconnection starts a new archive. Existing archives are kept. Commands will run again."); wrapMode: Text.WordWrap; Layout.fillWidth: true }
         }
     }
@@ -1015,10 +1015,13 @@ ApplicationWindow {
                 editable: true
             }
             Label {
-                text: root.tr("Storage limit in MiB per tab (stops when reached)")
+                text: root.tr("Ring buffer: last 200,000 lines / 25MiB. Display: last 2,000 lines / 256KiB. Collection continues when full.")
+                wrapMode: Text.WordWrap
+                Layout.maximumWidth: 480
             }
             SpinBox {
                 id: defaultCapacity
+                visible: false
                 from: 1
                 to: 10240
                 editable: true
@@ -1446,6 +1449,7 @@ ApplicationWindow {
                 model: logs
                 Item {
                     id: page
+                    readonly property var logText: logDocument.item
                     required property string logPath
                     required property bool remote
                     required property string source
@@ -1456,6 +1460,10 @@ ApplicationWindow {
                     required property int initial
                     required property int capacity
                     required property int index
+                    readonly property bool viewActive: index === tabs.currentIndex
+                    onViewActiveChanged: {
+                        if (viewReady) backend.set_view_active(viewActive);
+                    }
                     required property string filterText
                     required property bool filterEnabled
                     required property bool filterRegex
@@ -1634,11 +1642,15 @@ ApplicationWindow {
                         logs.setProperty(index, "follow", follow.checked);
                         root.scheduleSave();
                     }
-                    Component.onCompleted: viewReady = true
+                    Component.onCompleted: {
+                        viewReady = true;
+                        backend.set_view_active(viewActive);
+                    }
 
                     LogBackend {
                         id: backend
                         Component.onCompleted: {
+                            set_view_active(page.viewActive);
                             set_encoding(page.encoding);
                             if (page.remote)
                                 connect_profile(root.profileById(page.connectionId), page.logPath, page.initial, page.capacity, page.elevation, page.runUser, page.source);
@@ -1905,9 +1917,10 @@ ApplicationWindow {
                                 onCheckedChanged: {
                                     page.saveView();
                                     if (checked) {
-                                        logText.deselect();
+                                        scroll.displayFrozen = false;
+                                        if (logText) logText.deselect();
                                         Qt.callLater(scroll.updateLogText);
-                                        Qt.callLater(logText.followEnd);
+                                        Qt.callLater(() => { if (logText) logText.followEnd(); });
                                     }
                                 }
                             }
@@ -1938,7 +1951,7 @@ ApplicationWindow {
                             TextField {
                                 id: filterInput
                                 text: page.filterText
-                                placeholderText: root.tr("Filter (all history)")
+                                placeholderText: root.tr("Filter (current buffer)")
                                 Layout.fillWidth: true
                                 onTextEdited: {
                                     filterTimer.restart();
@@ -2020,7 +2033,7 @@ ApplicationWindow {
                                 id: searchInput
                                 text: page.searchText
                                 onTextEdited: page.saveView()
-                                placeholderText: root.tr("Search all history (independent of the filter)")
+                                placeholderText: root.tr("Search current buffer (independent of the filter)")
                                 Layout.fillWidth: true
                                 onAccepted: backend.search(text, searchRegex.checked, searchCase.checked)
                             }
@@ -2145,22 +2158,86 @@ ApplicationWindow {
                         }
                         ScrollView {
                             id: scroll
+                            ScrollBar.vertical.policy: ScrollBar.AlwaysOn
                             property real savedY: 0
                             property real savedX: 0
                             property bool updatingText: false
                             property string appliedText: ""
+                            property var appliedRevision: -1
+                            property bool displayFrozen: false
+                            property var appliedLineIds: []
+                            property string appliedPlainText: ""
+                            property int textUpdateSerial: 0
+                            function lineOffsets(text) {
+                                const offsets = [0];
+                                for (let i = 0; i < text.length; ++i)
+                                    if (text[i] === "\n") offsets.push(i + 1);
+                                return offsets;
+                            }
+                            function refreshExpiredView() {
+                                if (!logText || !displayFrozen || logText.selecting || logText.selectedText !== "") return false;
+                                displayFrozen = false;
+                                appliedRevision = -1;
+                                savedY = 0;
+                                updateLogText();
+                                restoreLogPosition(0, savedX);
+                                return true;
+                            }
                             function updateLogText() {
+                                if (!page.viewActive) return;
                                 // setText resets Qt's selection and mouse-drag anchor. Keep
                                 // this document stable until selection/copying is finished.
                                 // Reception, decoding, archiving and traps continue in Rust.
-                                if (selectionPointer.active || logText.selectionStart !== logText.selectionEnd)
+                                if (!logText || logText.selecting || logText.selectionStart !== logText.selectionEnd)
                                     return;
-                                if (appliedText === backend.highlightedText) return;
+                                const explicitChange = appliedRevision !== backend.viewRevision;
+                                if (explicitChange) {
+                                    appliedRevision = backend.viewRevision;
+                                    displayFrozen = false;
+                                }
+                                if (!follow.checked && !explicitChange && displayFrozen) return;
+                                if (!explicitChange && appliedText === backend.highlightedText
+                                        && JSON.stringify(appliedLineIds) === JSON.stringify(backend.lineIds)) return;
                                 let y = savedY;
-                                const x = savedX;
+                                const contextNavigation = explicitChange && backend.selectedPosition >= 0;
+                                const x = contextNavigation ? 0 : savedX;
+                                let anchor = -1;
+                                let anchorY = 0;
+                                let newAnchor = -1;
+                                const nextIds = backend.lineIds;
+                                const nextOffsets = lineOffsets(backend.text);
+                                if (!follow.checked && !explicitChange && appliedLineIds.length > 0) {
+                                    const offsets = lineOffsets(appliedPlainText);
+                                    for (let i = 0; i < appliedLineIds.length; ++i) {
+                                        const rect = logText.positionToRectangle(Math.min(logText.length, offsets[i]));
+                                        if (rect.y + rect.height > y) { anchor = i; anchorY = rect.y; break; }
+                                    }
+                                    if (anchor >= 0) {
+                                        newAnchor = nextIds.indexOf(appliedLineIds[anchor]);
+                                        if (newAnchor < 0) { displayFrozen = true; return; }
+                                    }
+                                }
                                 updatingText = true;
+                                const serial = ++textUpdateSerial;
                                 appliedText = backend.highlightedText;
+                                appliedPlainText = backend.text;
+                                appliedLineIds = nextIds.slice();
+                                if (contextNavigation) {
+                                    // A new TextArea discards both document and scene-graph
+                                    // viewport caches left by a previously followed live view.
+                                    contentItem.cancelFlick();
+                                    contentItem.contentX = 0;
+                                    contentItem.contentY = 0;
+                                    logDocument.active = false;
+                                    logDocument.active = true;
+                                }
                                 logText.text = appliedText;
+                                if (contextNavigation) {
+                                    const target = logText.positionToRectangle(Math.min(logText.length, backend.selectedPosition));
+                                    y = Math.max(0, target.y - (contentItem.height - target.height) / 2);
+                                }
+                                if (newAnchor >= 0)
+                                    y += logText.positionToRectangle(Math.min(logText.length, nextOffsets[newAnchor])).y - anchorY;
                                 // TextArea resets the cursor to the start and ScrollView
                                 // follows it during setText. Restore immediately so that
                                 // position cannot reach a rendered frame or the scrollbar.
@@ -2175,6 +2252,15 @@ ApplicationWindow {
                                     restoreLogPosition(y, x);
                                 }
                                 Qt.callLater(() => {
+                                    if (serial !== scroll.textUpdateSerial) return;
+                                    if (!page.viewActive || !logText) {
+                                        scroll.updatingText = false;
+                                        return;
+                                    }
+                                    if (contextNavigation) {
+                                        const target = logText.positionToRectangle(Math.min(logText.length, backend.selectedPosition));
+                                        y = Math.max(0, target.y - (scroll.contentItem.height - target.height) / 2);
+                                    }
                                     // Reconcile again after deferred layout has settled.
                                     scroll.restoreLogPosition(y, x);
                                     scroll.updatingText = false;
@@ -2183,6 +2269,7 @@ ApplicationWindow {
                                 });
                             }
                             function restoreLogPosition(y, x) {
+                                if (!logText || !contentItem) return;
                                 if (follow.checked) logText.followEnd();
                                 else {
                                     contentItem.contentY = Math.max(0, Math.min(y, contentItem.contentHeight - contentItem.height));
@@ -2205,6 +2292,7 @@ ApplicationWindow {
                                 // Observe the wheel without blocking ScrollView's own handler.
                                 blocking: false
                                 onWheel: event => {
+                                    if (scroll.refreshExpiredView()) { event.accepted = true; return; }
                                     if (event.angleDelta.y > 0 || event.pixelDelta.y > 0)
                                         scroll.pauseFollow();
                                     event.accepted = false;
@@ -2218,6 +2306,8 @@ ApplicationWindow {
                                     const bar = scroll.ScrollBar.vertical;
                                     if ((flick.dragging || (bar && bar.pressed)) && flick.contentY < flick.contentHeight - flick.height - 2)
                                         scroll.pauseFollow();
+                                    if (!scroll.updatingText && (flick.dragging || (bar && bar.pressed)))
+                                        scroll.refreshExpiredView();
                                 }
                                 function onContentXChanged() {
                                     if (!scroll.updatingText) scroll.savedX = scroll.contentItem.contentX;
@@ -2231,41 +2321,67 @@ ApplicationWindow {
                             }
                             Layout.fillWidth: true
                             Layout.fillHeight: true
-                            TextArea {
-                                id: logText
-                                text: ""
-                                readOnly: true
-                                Keys.onPressed: event => {
-                                    if (event.key === Qt.Key_Up || event.key === Qt.Key_PageUp || event.key === Qt.Key_Home)
-                                        scroll.pauseFollow();
-                                    event.accepted = false;
+                            Loader {
+                                id: logDocument
+                                // Loader does not get TextArea's direct-child ScrollView
+                                // sizing. Fill the viewport while allowing long documents
+                                // to retain their natural scrollable dimensions.
+                                width: Math.max(scroll.availableWidth, item ? item.contentWidth + item.leftPadding + item.rightPadding : 0)
+                                // Apply after layout instead of binding Loader height to
+                                // its child's metrics (which Loader itself resizes).
+                                function resizeDocument() {
+                                    height = Math.max(scroll.availableHeight,
+                                        item ? item.contentHeight + item.topPadding + item.bottomPadding : 0);
                                 }
-                                textFormat: TextEdit.RichText
-                                wrapMode: TextEdit.NoWrap
-                                font.family: "monospace"
-                                selectByMouse: true
-                                PointHandler {
-                                    id: selectionPointer
-                                    target: null
-                                    acceptedButtons: Qt.LeftButton
-                                    onActiveChanged: {
-                                        if (active) scroll.pauseFollow();
-                                        else Qt.callLater(scroll.updateLogText);
+                                onLoaded: Qt.callLater(resizeDocument)
+                                Connections {
+                                    target: scroll
+                                    function onAvailableHeightChanged() { Qt.callLater(logDocument.resizeDocument); }
+                                }
+                                sourceComponent: TextArea {
+                                    id: logText
+                                    readonly property alias selecting: selectionPointer.active
+                                    text: ""
+                                    readOnly: true
+                                    Keys.onPressed: event => {
+                                        if ([Qt.Key_Up, Qt.Key_Down, Qt.Key_PageUp, Qt.Key_PageDown, Qt.Key_Home, Qt.Key_End].indexOf(event.key) >= 0
+                                                && scroll.refreshExpiredView()) { event.accepted = true; return; }
+                                        if (event.key === Qt.Key_Up || event.key === Qt.Key_PageUp || event.key === Qt.Key_Home)
+                                            scroll.pauseFollow();
+                                        event.accepted = false;
                                     }
-                                }
-                                onSelectionStartChanged: Qt.callLater(scroll.updateLogText)
-                                onSelectionEndChanged: Qt.callLater(scroll.updateLogText)
-                                TapHandler {
-                                    acceptedButtons: Qt.RightButton
-                                    onTapped: {
-                                        selectionMenu.selectedText = logText.selectedText;
-                                        selectionMenu.textItem = logText;
-                                        selectionMenu.popup();
+                                    textFormat: TextEdit.RichText
+                                    wrapMode: TextEdit.NoWrap
+                                    font.family: "monospace"
+                                    selectByMouse: true
+                                    onContentHeightChanged: Qt.callLater(logDocument.resizeDocument)
+                                    PointHandler {
+                                        id: selectionPointer
+                                        target: null
+                                        acceptedButtons: Qt.LeftButton
+                                        onActiveChanged: {
+                                            if (active) scroll.pauseFollow();
+                                            else Qt.callLater(scroll.updateLogText);
+                                        }
                                     }
-                                }
-                                background: Rectangle {
-                                    color: palette.base
+                                    onSelectionStartChanged: Qt.callLater(scroll.updateLogText)
+                                    onSelectionEndChanged: Qt.callLater(scroll.updateLogText)
+                                    TapHandler {
+                                        acceptedButtons: Qt.RightButton
+                                        onTapped: {
+                                            selectionMenu.selectedText = logText.selectedText;
+                                            selectionMenu.textItem = logText;
+                                            selectionMenu.popup();
+                                        }
+                                    }
+                                    background: Rectangle {
+                                        color: palette.base
+                                    }
+                                    // TextArea's background is viewport-pinned inside ScrollView.
+                                    // A document child scrolls with the text; keep it between the
+                                    // base background (z = -1) and the rendered glyphs (z = 0).
                                     Rectangle {
+                                        z: -0.5
                                         objectName: "selectedLineBackground"
                                         property rect lineRect: {
                                             // Depend on text as well as the position: context text can change.
@@ -2280,13 +2396,13 @@ ApplicationWindow {
                                         color: logText.palette.highlight
                                         opacity: 0.75
                                     }
-                                }
-                                function followEnd() {
-                                    if (follow.checked) {
-                                        scroll.contentItem.contentY = Math.max(0, scroll.contentItem.contentHeight - scroll.contentItem.height);
+                                    function followEnd() {
+                                        if (follow.checked) {
+                                            scroll.contentItem.contentY = Math.max(0, scroll.contentItem.contentHeight - scroll.contentItem.height);
+                                        }
                                     }
+                                    onTextChanged: Qt.callLater(followEnd)
                                 }
-                                onTextChanged: Qt.callLater(followEnd)
                             }
                         }
                         Label {
@@ -2301,16 +2417,83 @@ ApplicationWindow {
                             wrapMode: Text.WrapAnywhere
                         }
                         ListView {
+                            id: searchResults
+                            ScrollBar.vertical: ScrollBar {
+                                policy: ScrollBar.AlwaysOn
+                            }
                             Layout.fillWidth: true
                             Layout.preferredHeight: visible ? 160 : 0
                             visible: backend.results.length > 0
                             clip: true
-                            model: backend.results
+                            model: ListModel { id: searchResultsModel }
                             boundsBehavior: Flickable.StopAtBounds
+                            flickableDirection: Flickable.VerticalFlick
+                            contentWidth: width
+                            function clampResultPosition() {
+                                contentX = 0;
+                                contentY = Math.max(originY, Math.min(contentY,
+                                    originY + Math.max(0, contentHeight - height)));
+                            }
+                            function updateResults() {
+                                const next = backend.results;
+                                let identical = next.length === searchResultsModel.count;
+                                for (let i = 0; identical && i < next.length; ++i) {
+                                    const current = searchResultsModel.get(i).modelData;
+                                    identical = current.line === next[i].line && current.text === next[i].text;
+                                }
+                                if (identical) return;
+                                const index = indexAt(1, contentY + 1);
+                                const anchor = index >= 0 ? searchResultsModel.get(index).modelData.line : -1;
+                                const item = index >= 0 ? itemAtIndex(index) : null;
+                                const offset = item ? item.y - contentY : 0;
+                                const previousY = contentY;
+                                // Search results are ordered by stable source-line number.
+                                // Keep existing delegates for append-only reception updates.
+                                let removed = 0;
+                                while (removed < searchResultsModel.count
+                                        && (next.length === 0 || searchResultsModel.get(removed).modelData.line < next[0].line))
+                                    ++removed;
+                                if (removed > 0) searchResultsModel.remove(0, removed);
+                                let mismatch = false;
+                                for (let i = 0; i < next.length; ++i) {
+                                    if (i < searchResultsModel.count && searchResultsModel.get(i).modelData.line !== next[i].line) {
+                                        searchResultsModel.remove(i, searchResultsModel.count - i);
+                                        mismatch = true;
+                                    }
+                                    if (i >= searchResultsModel.count)
+                                        searchResultsModel.append({modelData: {line: next[i].line, text: next[i].text}});
+                                    else if (searchResultsModel.get(i).modelData.text !== next[i].text)
+                                        searchResultsModel.set(i, {modelData: {line: next[i].line, text: next[i].text}});
+                                }
+                                if (searchResultsModel.count > next.length)
+                                    searchResultsModel.remove(next.length, searchResultsModel.count - next.length);
+                                forceLayout();
+                                let target = -1;
+                                for (let i = 0; i < next.length; ++i)
+                                    if (next[i].line === anchor) { target = i; break; }
+                                if (target >= 0) {
+                                    positionViewAtIndex(target, ListView.Beginning);
+                                    const row = itemAtIndex(target);
+                                    if (row) contentY = row.y - offset;
+                                } else if (removed > 0 || mismatch) {
+                                    positionViewAtBeginning();
+                                } else {
+                                    contentY = previousY;
+                                }
+                                clampResultPosition();
+                                // Delegate sizing and ListView's origin may settle after
+                                // model removals. Clamp again without restoring stale Y.
+                                Qt.callLater(searchResults.clampResultPosition);
+                            }
+                            Component.onCompleted: updateResults()
+                            Connections {
+                                target: backend
+                                function onChanged() { searchResults.updateResults(); }
+                            }
                             delegate: RowLayout {
                                 id: resultRow
                                 required property var modelData
-                                width: ListView.view.width
+                                width: Math.max(0, ListView.view.width - searchResults.ScrollBar.vertical.width)
                                 Button {
                                     text: resultRow.modelData.line + ": ↗"
                                     Accessible.name: root.tr("Show search context")
@@ -2322,6 +2505,8 @@ ApplicationWindow {
                                 TextArea {
                                     id: resultText
                                     Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    Layout.preferredWidth: 0
                                     readOnly: true
                                     selectByMouse: true
                                     textFormat: TextEdit.RichText
@@ -2339,14 +2524,6 @@ ApplicationWindow {
                                     }
                                 }
                             }
-                            // WheelHandler {
-                            //     acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                            //     onWheel: (event) => {
-                            //         let scrollFactor = 2.0;
-                            //         listView.contentY -= (event.angleDelta.y * scrollFactor);
-                            //         event.accepted = true;
-                            //     }
-                            // }
                         }
                     }
                 }
@@ -2424,10 +2601,27 @@ ApplicationWindow {
                     originalPages.push(pageRepeater.itemAt(i));
                     originalArchives.push(pageRepeater.itemAt(i).backend.archivePath);
                 }
+                tabs.currentIndex = 0;
+                stage = 10;
+                restart();
+                return;
+            }
+            if (stage >= 10 && stage <= 12) {
+                const index = stage - 10;
+                const page = pageRepeater.itemAt(index);
+                if (page.backend.text !== "tab-" + index + "\n") {
+                    console.error("TAILER_TAB_ACTIVATION_FAILED", index); Qt.exit(1); return;
+                }
+                if (stage < 12) {
+                    tabs.currentIndex = index + 1;
+                    stage++;
+                    restart();
+                    return;
+                }
                 tabs.currentIndex = 1;
                 logs.setProperty(0, "unread", true);
                 root.moveTab(0, 2);
-                stage++;
+                stage = 1;
                 restart();
                 return;
             }
@@ -2811,12 +3005,20 @@ ApplicationWindow {
     Timer {
         id: restoreTimer
         interval: 3000
+        property bool activated: false
         onTriggered: {
+            if (!activated) {
+                if (tabs.currentIndex !== 1) { console.error("TAILER_RESTORE_SELECTION_FAILED"); Qt.exit(1); return; }
+                tabs.currentIndex = 0;
+                activated = true;
+                restart();
+                return;
+            }
             // Integration fixture has two local tabs, including a saved filter.
             // qmllint disable missing-property
             const page = pageRepeater.itemAt(0);
             const expected = logs.count > 0 && logs.get(0).encoding === "CP932" ? "ERROR 日本語" : "ERROR old";
-            if (logs.count !== 2 || tabs.currentIndex !== 1 || !page || page.backend.text.trim() !== expected || logs.get(0).filterText !== "ERROR" || settings.initialLines !== 20) {
+            if (logs.count !== 2 || tabs.currentIndex !== 0 || !page || page.backend.text.trim() !== expected || logs.get(0).filterText !== "ERROR" || settings.initialLines !== 20) {
                 console.error("TAILER_RESTORE_FAILED");
                 Qt.exit(1);
                 return;
@@ -2825,6 +3027,7 @@ ApplicationWindow {
                 console.error("TAILER_RESTORE_TRAP_FAILED"); Qt.exit(1); return;
             }
             // qmllint enable missing-property
+            tabs.currentIndex = 1;
             root.saveWorkspace();
             console.log("TAILER_RESTORE_OK");
             Qt.quit();
@@ -2842,7 +3045,7 @@ ApplicationWindow {
                 const page = pageRepeater.itemAt(i);
                 // The Repeater returns QQuickItem; these properties belong to its delegate.
                 // qmllint disable missing-property
-                if (!page || (root.smokeStage === 4 && !page.backend.text.includes("smoke-appended"))) {
+                if (!page || (root.smokeStage === 4 && i === 1 && !page.backend.text.includes("smoke-appended"))) {
                     console.error("TAILER_SMOKE_FAILED", i);
                     Qt.exit(1);
                     return;
@@ -2861,20 +3064,14 @@ ApplicationWindow {
                     Qt.exit(1);
                     return;
                 }
-                tabs.currentIndex = 0;
-                if (logs.get(0).unread || logs.get(0).alert) {
-                    console.error("TAILER_UNREAD_CLEAR_FAILED");
-                    Qt.exit(1);
-                    return;
-                }
-                tabs.currentIndex = 1;
                 if (!pageRepeater.itemAt(1).testOptionsPanel()) {
                     console.error("TAILER_OPTIONS_PANEL_FAILED");
                     Qt.exit(1);
                     return;
                 }
-                if (!pageRepeater.itemAt(0).backend.highlightedText.includes("color:#35c66b")) {
-                    console.error("TAILER_HIGHLIGHT_FAILED");
+                tabs.currentIndex = 0;
+                if (logs.get(0).unread || logs.get(0).alert) {
+                    console.error("TAILER_UNREAD_CLEAR_FAILED");
                     Qt.exit(1);
                     return;
                 }
@@ -2884,6 +3081,9 @@ ApplicationWindow {
             }
             const first = pageRepeater.itemAt(0).backend;
             if (root.smokeStage === 6) {
+                if (!first.highlightedText.includes("color:#35c66b")) {
+                    console.error("TAILER_HIGHLIGHT_FAILED"); Qt.exit(1); return;
+                }
                 if (first.selectedPosition < 0 || !first.text.includes("2: smoke-appended")) {
                     console.error("TAILER_CONTEXT_HIGHLIGHT_FAILED"); Qt.exit(1); return;
                 }

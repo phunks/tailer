@@ -45,6 +45,10 @@ pub struct LogBackend {
     highlighted_text: String,
     selected_line: Option<usize>,
     connected: bool,
+    view_revision: u64,
+    view_generation: u64,
+    view_active: bool,
+    line_ids: Value,
 }
 
 impl Default for LogBackend {
@@ -72,6 +76,10 @@ impl Default for LogBackend {
             highlighted_text: String::new(),
             selected_line: None,
             connected: false,
+            view_revision: 0,
+            view_generation: 0,
+            view_active: true,
+            line_ids: json!([]),
         }
     }
 }
@@ -86,6 +94,8 @@ impl LogBackend {
     );
     qproperty!("status", Read = translated_status, Notify = changed);
     qproperty!("connected", Member = connected, Notify = changed);
+    qproperty!("viewRevision", Member = view_revision, Notify = changed);
+    qproperty!("lineIds", Member = line_ids, Notify = changed);
     qproperty!(
         "selectedPosition",
         Read = selected_position,
@@ -147,6 +157,14 @@ impl LogBackend {
     }
 
     #[qslot]
+    fn set_view_active(&mut self, active: bool) {
+        self.view_active = active;
+        if let Some(session) = &self.session {
+            session.set_view_active(active);
+        }
+    }
+
+    #[qslot]
     fn set_trap(&mut self, text: String, ignore_case: bool) {
         let value = trap::sanitize_rules(&json!([{"text":text,"ignoreCase":ignore_case}]));
         self.set_trap_rules(value);
@@ -170,7 +188,9 @@ impl LogBackend {
         if let Some(session) = &self.session {
             session.set_trap_rules(self.trap_rules.clone());
         }
-        self.highlighted_text = trap::highlight_rules(&self.text, &self.trap_rules);
+        if self.view_active {
+            self.highlighted_text = trap::highlight_rules(&self.text, &self.trap_rules);
+        }
         self.changed();
         String::new()
     }
@@ -299,6 +319,9 @@ impl LogBackend {
         self.selected_line = None;
         self.query.context = None;
         self.text.clear();
+        self.line_ids = json!([]);
+        self.view_revision += 1;
+        self.view_generation = 0;
         self.highlighted_text = trap::highlight_rules("", &self.trap_rules);
         self.results = json!([]);
         self.summary.clear();
@@ -307,6 +330,7 @@ impl LogBackend {
         self.credential_status.clear();
         match result {
             Ok(session) => {
+                session.set_view_active(self.view_active);
                 session.set_trap_rules(self.trap_rules.clone());
                 self.query.generation = session.query(self.query.clone());
                 self.archive_path = session.path.display().to_string();
@@ -358,12 +382,20 @@ impl LogBackend {
         let mut changed = self.status != status || self.connected != connected;
         self.connected = connected;
         self.status = status;
-        if let Some(view) = session.view()
+        if self.view_active
+            && let Some(view) = session.view()
             && view.generation == self.query.generation
         {
             self.query_error = view.error;
             if self.query_error.is_empty() {
+                // Only an applied explicit query releases a paused display;
+                // ordinary reception/status notifications keep the same revision.
+                if self.view_generation != view.generation {
+                    self.view_generation = view.generation;
+                    self.view_revision += 1;
+                }
                 self.text = view.text;
+                self.line_ids = json!(view.line_ids);
                 self.selected_line = self.query.context;
                 self.highlighted_text = trap::highlight_rules(&self.text, &self.trap_rules);
                 self.results = view.results;

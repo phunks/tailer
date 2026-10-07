@@ -166,6 +166,14 @@ Privilege escalation failed / ended. Check the user, sudo/su settings and user s
 Escalation input is unavailable|昇格入力がありません|提权输入不可用|提權輸入無法使用|권한 상승 입력을 사용할 수 없습니다
 Storage limit reached. Collection stopped; history is retained.|保存容量上限に達したため取得を停止しました。履歴は保持されています|已达到存储上限。停止收集，保留历史。|已達到儲存上限。停止收集，保留歷史。|저장 한도에 도달하여 수집을 중지했습니다. 기록은 유지됩니다.
 Following|監視中|跟踪中|追蹤中|추적 중
+Buffered {} KiB|バッファ {} KiB|缓冲 {} KiB|緩衝 {} KiB|버퍼 {} KiB
+Buffered {} lines|バッファ内 {} 行|缓冲区内 {} 行|緩衝區內 {} 行|버퍼 내 {}줄
+Buffer search: {} matches|バッファ内検索 {} 件|缓冲区搜索：{} 个匹配|緩衝區搜尋：{} 個符合|버퍼 검색: {}건
+Filter (current buffer)|フィルタ（現在のバッファ）|筛选（当前缓冲区）|篩選（目前緩衝區）|필터 (현재 버퍼)
+Search current buffer (independent of the filter)|現在のバッファを検索（フィルタとは独立）|搜索当前缓冲区（独立于筛选）|搜尋目前緩衝區（獨立於篩選）|현재 버퍼 검색 (필터와 독립)
+Last 2,000 lines / 256KiB maximum|末尾最大2,000行 / 256KiB|最多末尾 2,000 行 / 256KiB|最多末尾 2,000 行 / 256KiB|마지막 최대 2,000줄 / 256KiB
+Ring buffer: last 2,000 lines / 256KiB. Old logs are discarded; collection continues.|リングバッファ：末尾最大2,000行 / 256KiB。古いログを破棄して取得を継続します。|环形缓冲区：末尾最多 2,000 行 / 256KiB。丢弃旧日志并继续收集。|環形緩衝區：末尾最多 2,000 行 / 256KiB。捨棄舊日誌並繼續收集。|링 버퍼: 마지막 최대 2,000줄 / 256KiB. 오래된 로그를 삭제하고 수집을 계속합니다.
+Ring buffer: last 200,000 lines / 25MiB. Display: last 2,000 lines / 256KiB. Collection continues when full.|保持：末尾最大20万行 / 25MiB。表示：末尾最大2,000行 / 256KiB。上限到達後も取得を継続します。|保留：末尾最多 200,000 行 / 25MiB。显示：末尾最多 2,000 行 / 256KiB。达到上限后继续收集。|保留：末尾最多 200,000 行 / 25MiB。顯示：末尾最多 2,000 行 / 256KiB。達到上限後繼續收集。|보관: 마지막 최대 200,000줄 / 25MiB. 표시: 마지막 최대 2,000줄 / 256KiB. 한도에 도달해도 수집을 계속합니다.
 Saved {} KiB|保存 {} KiB|已保存 {} KiB|已儲存 {} KiB|저장됨 {} KiB
 Connection ended ({})|接続終了 ({})|连接结束 ({})|連線結束 ({})|연결 종료 ({})
 Saved history remains searchable|保存済み履歴は検索可能|已保存的历史仍可搜索|已儲存的歷史仍可搜尋|저장된 기록은 계속 검색할 수 있습니다
