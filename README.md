@@ -1,7 +1,7 @@
 # Tailer
 A multi-tab log viewer built with Rust, Qt Bridge for Rust, and Qt Quick.
 ![window.png](.github/images/window.png)
-Tailer follows local files, streams logs over SSH, and runs custom commands. Received logs are converted to UTF-8 and kept in a bounded rolling buffer: the last 200,000 lines / 25 MiB per tab. Display remains limited to the last 2,000 lines / 256 KiB (matching lines when filtered). Old logs are discarded automatically without stopping collection.
+Tailer follows local files, streams logs over SSH, receives syslog over UDP, and runs custom commands. Received logs are converted to UTF-8 and kept in a bounded rolling buffer: the last 200,000 lines / 25 MiB per tab. Display remains limited to the last 2,000 lines / 256 KiB (matching lines when filtered). Old logs are discarded automatically without stopping collection.
 
 ## Requirements
 
@@ -110,6 +110,68 @@ Traps inspect newly received data independently of the display filter. A match m
 Matching text is highlighted in bold in each tag's chosen color, including previously displayed history, search context, and search results. Earlier tags take color priority where matches overlap. Re-displaying history or changing settings does not trigger another reception alert. Matches can span receive boundaries; configuration changes reset partial-match state. Initial logs are detected only if they arrive after configuration.
 
 Regex uses the same Rust `regex` syntax as filtering/searching; look-around and backreferences are not supported. Zero-length matches are ignored. Streaming regex detection retains up to 256 KiB of previous UTF-8 input (plus boundary bytes), so arbitrarily long cross-receive matches are not guaranteed. A growing match at the same starting position alerts only once; end anchors are evaluated against currently received data, not a finalized file. Sound and OS notifications are not implemented.
+
+## Syslog reception (UDP)
+
+Choose **Syslog…**, enter a numeric IP address and port, and open a receiver tab.
+The default `127.0.0.1:1514` accepts only local senders. Use your LAN IP or
+`0.0.0.0:1514` to accept IPv4 LAN devices; IPv6 endpoints use `[::1]:1514` or
+`[::]:1514`. IPv6 dual-stack behavior depends on the OS. Port 514 may require
+additional privileges; 1514 avoids that requirement on typical systems.
+
+BSD/RFC3164, RFC5424, Cisco and Juniper payloads are accepted without header
+validation or normalization. Parsing remains in the existing extraction/Roto
+analysis pipeline. Each nonempty datagram receives a trailing newline if needed;
+embedded newlines remain separate display/analysis lines. Empty datagrams are
+ignored. UTF-8 decoding replaces malformed bytes, and datagram boundaries reset
+the decoder. Payloads up to the UDP transport limit are received without an
+application-side truncation buffer. Existing bounded retention, search, traps,
+and analysis apply. Sender IP and reception timestamps are not added to the text.
+
+Closing/stopping a receiver releases its socket. Tab and bookmark settings retain
+the endpoint and restart reception when reopened, including at application startup.
+Editing/reconnecting a tab starts a new buffer. Bind failures (including an
+already-used port) are displayed in the tab status.
+
+The **Syslog labels** checkbox (Syslog tabs only; initially off) replaces valid
+leading PRI values with two bracketed, uppercase four-character ASCII labels, e.g.
+`<190>` becomes `[INFO][LOC7]`. Severity labels are `EMRG`, `ALRT`, `CRIT`, `ERRO`,
+`WARN`, `NOTI`, `INFO`, and `DBUG`. Facility labels include `KERN`, `USER`, `MAIL`,
+`DMON`, `AUTH`, `SYSL`, `CRON`, and `LOC0`–`LOC7`; shorter names are space-padded
+inside the brackets (e.g. `[DBUG][FTP ]`).
+Four color families are used, not eight distinct colors. Removing variable-width
+symbols and using equal-length labels aligns valid PRI prefixes in the monospace
+log view. Roto helpers still return full names. Selection/copying copies the displayed labels; disable
+the checkbox to copy the original PRI. The display filter matches the visible
+labels while the option is on (e.g. literal `[DBUG]` or `[DBUG][USER]`), and raw
+messages while it is off. Regex, ignore-case, invert, and numeric conditions use
+that same matching text. Toggling labels automatically reapplies the filter.
+Search, trap matching, archives, and Roto analysis still use the original message.
+The option is saved with tabs/bookmarks.
+Malformed/missing PRI values are left unchanged.
+
+**UDP has no authentication, encryption, acknowledgements or guaranteed delivery.**
+Limit sender access using your firewall; avoid exposing listeners to the public
+Internet. Packets may be lost under load, and kernel/network drops are not counted
+by this initial implementation. TCP/RFC6587 and TLS/RFC5425 are not implemented.
+
+## Log analysis (Roto prototype)
+
+Choose **Analyze…** in a log tab to configure a pre-extraction line filter and
+Regex, delimiter, whitespace, or JSON Lines extraction. Map fields for direct
+aggregation, or optionally transform them with a Roto parsing function.
+Rust aggregates currently retained logs into grouped counts,
+sums, averages, minima, or maxima, independently of the display filter.
+Specify result columns such as `path, method, status, avg(elapsed), count()`
+for composite grouping and multiple statistics in one pass.
+LiteLLM / Uvicorn and Apache CLF + `%D` are protected default presets.
+Save named user presets to preserve the full analysis configuration across
+tabs and restarts; loading a preset does not automatically execute it.
+
+See [Roto log analysis](docs/roto-analysis.md) for the runtime API, examples,
+diagnostics, update behavior, limitations, and tests. Run only trusted scripts;
+this prototype is not a hardened sandbox. Unsaved tab edits and active analysis
+results are not restored automatically.
 
 ## SSH connections
 

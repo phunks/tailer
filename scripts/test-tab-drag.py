@@ -73,6 +73,24 @@ Item {
             compare(closeTabDialog.tabIndex, 2);
             compare(closeTabDialog.mode, "others");
         }
+        function test_single_tab_stays_compact() {
+            logs.remove(1, logs.count - 1);
+            tryCompare(tabRepeater, "count", 1);
+            wait(50);
+            const tab = tabRepeater.itemAt(0);
+            verify(tab.width >= 100 && tab.width <= 260);
+            verify(tab.width < tabs.width / 2, "One tab must not fill the window");
+            const shortWidth = tab.width;
+            logs.setProperty(0, "logTitle", "A moderately longer log title");
+            wait(50);
+            verify(tab.width > shortWidth, "Tab width should follow the title");
+            logs.setProperty(0, "logTitle", "Very long log title ".repeat(20));
+            tryCompare(tab, "width", 260);
+            root.width = 180;
+            wait(50);
+            verify(tab.width <= tabs.availableWidth);
+            verify(findChild(tab, "closeTabButton").visible);
+        }
     }
 }
 """

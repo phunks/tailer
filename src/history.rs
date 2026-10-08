@@ -119,6 +119,7 @@ pub struct Pattern {
     pub ignore_case: bool,
     pub invert: bool,
     pub numeric: serde_json::Value,
+    pub syslog_labels: bool,
 }
 
 #[derive(Clone, Default)]
@@ -245,11 +246,20 @@ pub fn scan_reader(
             ));
         }
         number += 1;
+        // Match the presentation but retain raw text and history IDs for rendering,
+        // context navigation and analysis. Never rewrite the archive.
+        let display;
+        let candidate = if pattern.syslog_labels {
+            display = crate::syslog::display_text(&line);
+            display.as_str()
+        } else {
+            line.as_str()
+        };
         let matched = match &numeric {
             Some(condition) => matcher
-                .captures_iter(&line)
+                .captures_iter(candidate)
                 .any(|captures| condition.matches(&captures)),
-            None => matcher.is_match(&line),
+            None => matcher.is_match(candidate),
         };
         if matched != pattern.invert {
             matches.count += 1;
@@ -336,6 +346,48 @@ pub fn trim_to_limit(text: &mut String, limit: usize) -> usize {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicU64;
+
+    #[test]
+    fn syslog_label_filters_match_display_but_return_raw_lines() {
+        let input = "<15>debug 12\n<190>info 34\n<12>warning 56\nplain 78\n";
+        let scan = |pattern: Pattern| {
+            scan_reader(
+                input.as_bytes(),
+                &pattern,
+                &AtomicBool::new(false),
+                &AtomicU64::new(0),
+                0,
+                100,
+            )
+            .unwrap()
+        };
+        let mut pattern = Pattern {
+            text: "[DBUG][USER]".into(),
+            syslog_labels: true,
+            ..Pattern::default()
+        };
+        let result = scan(pattern.clone());
+        assert_eq!(result.count, 1);
+        assert_eq!(result.lines[0], (101, "<15>debug 12".into()));
+        pattern.syslog_labels = false;
+        assert_eq!(scan(pattern.clone()).count, 0);
+        pattern.text = "<15>".into();
+        assert_eq!(scan(pattern.clone()).count, 1);
+        pattern.syslog_labels = true;
+        assert_eq!(scan(pattern.clone()).count, 0);
+        pattern.text = "[info]".into();
+        pattern.ignore_case = true;
+        assert_eq!(scan(pattern.clone()).count, 1);
+        pattern.text = r"^\[(?:DBUG|WARN)\]\[USER\]".into();
+        pattern.regex = true;
+        assert_eq!(scan(pattern.clone()).count, 2);
+        pattern.invert = true;
+        assert_eq!(scan(pattern.clone()).count, 2);
+        pattern.invert = false;
+        pattern.text = r"^\[INFO\]\[LOC7\].* (\d+)$".into();
+        pattern.numeric = serde_json::json!({"capture":1,"operator":">","value":"30"});
+        assert_eq!(scan(pattern).count, 1);
+    }
 
     #[test]
     fn retention_ring_is_lazy_and_bounds_lines_independently_of_display() {

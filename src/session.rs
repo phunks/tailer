@@ -44,6 +44,7 @@ struct Shared {
     diagnostics: Mutex<String>,
     child: Mutex<Option<Child>>,
     raw: Mutex<RawStream>,
+    udp_worker: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
 #[derive(Default)]
@@ -430,6 +431,80 @@ impl Session {
         Self::start_encoded(command, limit, None, encoding)
     }
 
+    /// Receive raw syslog without enforcing a particular vendor/header syntax.
+    pub fn syslog_udp(endpoint: String, limit: u64) -> io::Result<Self> {
+        let address: std::net::SocketAddr = endpoint
+            .parse()
+            .map_err(|_| io::Error::other("Use an IP address and port, e.g. 127.0.0.1:1514"))?;
+        if address.port() == 0 {
+            return Err(io::Error::other("Syslog port must be between 1 and 65535"));
+        }
+        let socket = std::net::UdpSocket::bind(address)?;
+        socket.set_read_timeout(Some(Duration::from_millis(100)))?;
+        let directory = create_directory()?;
+        let path = directory.join("received.log");
+        let mut archive = private_file(&path)?;
+        let shared = new_shared(None);
+        initialize_raw(
+            &shared,
+            &path,
+            crate::encoding::Decoder::new("UTF-8")?,
+            limit,
+            "UTF-8",
+        )?;
+        shared.connected.store(true, Ordering::Relaxed);
+        *shared.status.lock().unwrap() = format!("Listening · UDP {address}");
+        let state = shared.clone();
+        let worker = thread::spawn(move || {
+            // Larger than the largest UDP payload: no silently truncated datagrams.
+            let mut buffer = [0u8; 65536];
+            let result = (|| -> io::Result<()> {
+                while !state.stop.load(Ordering::Relaxed) {
+                    let count = match socket.recv_from(&mut buffer) {
+                        Ok((count, _peer)) => count,
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                            ) =>
+                        {
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    };
+                    if state.stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    if count == 0 {
+                        continue;
+                    }
+                    receive_raw(&state, &mut archive, &buffer[..count], false)?;
+                    reset_raw_decoder(&state, &mut archive)?;
+                    if buffer[count - 1] != b'\n' {
+                        receive_raw(&state, &mut archive, b"\n", false)?;
+                    }
+                    *state.status.lock().unwrap() = format!("Listening · UDP {address}");
+                }
+                Ok(())
+            })();
+            state.connected.store(false, Ordering::Relaxed);
+            if let Err(error) = result {
+                *state.status.lock().unwrap() = format!("UDP receive failed: {error}");
+                state.revision.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        *shared.udp_worker.lock().unwrap() = Some(worker);
+        spawn_history_worker(&shared, &path);
+        let (_, prompts) = mpsc::channel();
+        Ok(Self {
+            shared,
+            path,
+            prompts,
+            connection: None,
+            own_transport: None,
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn start(
         command: Command,
@@ -601,6 +676,24 @@ impl Session {
     pub fn received_bytes(&self) -> u64 {
         self.shared.received_bytes.load(Ordering::Relaxed)
     }
+    pub fn analysis_worker(&self) -> crate::analysis::Worker {
+        let state = self.shared.clone();
+        crate::analysis::Worker::new(move |previous| {
+            let raw = state.raw.lock().unwrap();
+            let revision = state.revision.load(Ordering::Relaxed);
+            if previous == Some(revision) {
+                return None;
+            }
+            let mut bytes = Vec::with_capacity(raw.text.len());
+            raw.text.write_to(&mut bytes).ok()?;
+            Some(crate::analysis::Snapshot {
+                bytes,
+                first_line: raw.first_line,
+                revision,
+                finished: raw.finished,
+            })
+        })
+    }
     pub fn is_connected(&self) -> bool {
         self.shared.connected.load(Ordering::Relaxed) && !self.shared.stop.load(Ordering::Relaxed)
     }
@@ -714,6 +807,9 @@ impl Session {
     pub fn stop(&self) {
         self.shared.connected.store(false, Ordering::Relaxed);
         self.shared.stop.store(true, Ordering::Relaxed);
+        if let Some(worker) = self.shared.udp_worker.lock().unwrap().take() {
+            let _ = worker.join();
+        }
         if let Some(transport) = &self.own_transport {
             transport.stop();
         }
@@ -759,12 +855,18 @@ fn initialize_raw(
 fn reset_raw_decoder(state: &Shared, archive: &mut File) -> io::Result<()> {
     let mut raw = state.raw.lock().unwrap();
     let text = raw.decoder.as_mut().unwrap().decode(&[], true)?;
+    state
+        .encoding_errors
+        .store(raw.decoder.as_ref().unwrap().errors, Ordering::Relaxed);
     retain_received(state, archive, &mut raw, &text)?;
     let offset = raw.bytes;
     if raw.resets.last() != Some(&offset) {
         raw.resets.push(offset);
     }
-    raw.decoder = Some(crate::encoding::Decoder::new(&raw.encoding)?);
+    let errors = raw.decoder.as_ref().unwrap().errors;
+    let mut decoder = crate::encoding::Decoder::new(&raw.encoding)?;
+    decoder.errors = errors;
+    raw.decoder = Some(decoder);
     Ok(())
 }
 
@@ -887,6 +989,7 @@ fn new_shared(child: Option<Child>) -> Arc<Shared> {
         diagnostics: Mutex::new(String::new()),
         child: Mutex::new(child),
         raw: Mutex::new(RawStream::default()),
+        udp_worker: Mutex::new(None),
     })
 }
 
@@ -1057,11 +1160,85 @@ pub fn pattern(text: String, regex: bool, ignore_case: bool, invert: bool) -> Pa
         ignore_case,
         invert,
         numeric: Value::Null,
+        syslog_labels: false,
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn syslog_udp_receives_vendor_formats_and_releases_port() {
+        let probe = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let address = probe.local_addr().unwrap();
+        drop(probe);
+        let session = Session::syslog_udp(address.to_string(), 1024 * 1024).unwrap();
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let messages = [
+            "<34>Oct 11 22:14:15 bsd su: failed login",
+            "<189>123: Oct 11 22:14:15: %LINK-3-UPDOWN: Interface down",
+            "<132>Oct 11 22:14:15 juniper rpd[42]: RPD_BGP_NEIGHBOR_STATE_CHANGED",
+            "<165>1 2026-10-11T22:14:15Z host app 42 ID47 - 日本語\n",
+        ];
+        let mut expected = String::new();
+        for message in messages {
+            sender.send_to(message.as_bytes(), address).unwrap();
+            expected.push_str(message);
+            if !message.ends_with('\n') {
+                expected.push('\n');
+            }
+            wait_for_archive(&session, &expected);
+        }
+        sender.send_to(b"", address).unwrap();
+        sender.send_to(&[0xe3], address).unwrap();
+        expected.push_str("�\n");
+        wait_for_archive(&session, &expected);
+        sender.send_to(b"next", address).unwrap();
+        expected.push_str("next\n");
+        wait_for_archive(&session, &expected);
+        let other = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        other
+            .send_to(b"other sender\r\nembedded\nline", address)
+            .unwrap();
+        expected.push_str("other sender\r\nembedded\nline\n");
+        wait_for_archive(&session, &expected);
+        assert!(session.is_connected());
+        assert!(session.status().contains("UDP"));
+        assert!(session.shared.encoding_errors.load(Ordering::Relaxed) > 0);
+        assert!(Session::syslog_udp(address.to_string(), 1024).is_err());
+        session.stop();
+        assert!(!session.is_connected());
+        let restarted = Session::syslog_udp(address.to_string(), 1024).unwrap();
+        drop(restarted);
+        assert!(std::net::UdpSocket::bind(address).is_ok());
+    }
+
+    #[test]
+    fn syslog_udp_accepts_large_datagrams_and_bounds_retention() {
+        let probe = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let address = probe.local_addr().unwrap();
+        drop(probe);
+        let session = Session::syslog_udp(address.to_string(), 1024 * 1024).unwrap();
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        // macOS's default UDP send limit can be below the protocol maximum.
+        let message = "x".repeat(8_000);
+        sender.send_to(message.as_bytes(), address).unwrap();
+        wait_for_archive(&session, &(message + "\n"));
+        session.stop();
+        let bounded = Session::syslog_udp(address.to_string(), 128).unwrap();
+        for i in 0..10 {
+            sender
+                .send_to(format!("{i}:{}", "a".repeat(100)).as_bytes(), address)
+                .unwrap();
+            thread::sleep(Duration::from_millis(20));
+        }
+        bounded.stop();
+        assert!(bounded.shared.raw.lock().unwrap().text.len() <= 128);
+        assert!(fs::read_to_string(&bounded.path).unwrap().contains("9:"));
+        for invalid in ["localhost:1514", "127.0.0.1:0", "127.0.0.1:65536", "bad"] {
+            assert!(Session::syslog_udp(invalid.into(), 1024).is_err());
+        }
+    }
+
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     #[test]

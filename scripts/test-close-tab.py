@@ -68,6 +68,13 @@ Item {
             const second = tabRepeater.itemAt(1);
             compare(first.height, baseline.implicitHeight + 6);
             compare(second.height, first.height);
+            for (const tab of [first, second]) {
+                compare(tab.background.topLeftRadius, 8);
+                compare(tab.background.topRightRadius, 8);
+                compare(tab.background.bottomLeftRadius, 0);
+                compare(tab.background.bottomRightRadius, 0);
+                verify(tab.background.antialiasing);
+            }
             compare(first.background.color.toString(), Qt.lighter(first.palette.button, 1.50).toString());
             verify(first.background.color.toString() !== second.background.color.toString());
             mouseClick(second, 10, second.height / 2);

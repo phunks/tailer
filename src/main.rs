@@ -3,6 +3,8 @@
     windows_subsystem = "windows"
 )]
 
+mod analysis;
+mod analysis_presets;
 mod connections;
 mod credentials;
 mod elevation;
@@ -13,6 +15,7 @@ mod numeric;
 mod session;
 mod source;
 mod ssh;
+mod syslog;
 mod tail;
 mod trap;
 mod workspace;
@@ -23,6 +26,10 @@ use serde_json::{Value, json};
 use session::{Prompt, Session, SshOptions};
 
 pub struct LogBackend {
+    analysis_worker: Option<analysis::Worker>,
+    analysis_generation: u64,
+    analysis_result: Value,
+    analysis_busy: bool,
     pending: Option<(SshOptions, u64, std::rc::Rc<connections::Managed>)>,
     input_encoding: String,
     session: Option<Session>,
@@ -43,6 +50,8 @@ pub struct LogBackend {
     trap_rules: Vec<trap::CompiledRule>,
     trap_hits: u64,
     highlighted_text: String,
+    display_text: String,
+    syslog_badges: bool,
     selected_line: Option<usize>,
     connected: bool,
     view_revision: u64,
@@ -54,6 +63,10 @@ pub struct LogBackend {
 impl Default for LogBackend {
     fn default() -> Self {
         Self {
+            analysis_worker: None,
+            analysis_generation: 0,
+            analysis_result: json!({}),
+            analysis_busy: false,
             pending: None,
             input_encoding: "UTF-8".into(),
             session: None,
@@ -74,6 +87,8 @@ impl Default for LogBackend {
             trap_rules: Vec::new(),
             trap_hits: 0,
             highlighted_text: String::new(),
+            display_text: String::new(),
+            syslog_badges: false,
             selected_line: None,
             connected: false,
             view_revision: 0,
@@ -86,7 +101,106 @@ impl Default for LogBackend {
 
 #[qobject]
 impl LogBackend {
+    qproperty!(
+        "analysisResult",
+        Member = analysis_result,
+        Notify = analysis_changed
+    );
+    qproperty!(
+        "analysisBusy",
+        Member = analysis_busy,
+        Notify = analysis_changed
+    );
+    #[qsignal]
+    fn analysis_changed(&mut self);
+
+    #[qslot]
+    fn analysis_preset(&self, apache: bool) -> Value {
+        if apache {
+            json!({"regex":analysis::APACHE_REGEX, "script":analysis::APACHE_SCRIPT})
+        } else {
+            json!({"regex":analysis::ACCESS_REGEX, "script":analysis::ACCESS_SCRIPT})
+        }
+    }
+
+    #[qslot]
+    fn analyze(
+        &mut self,
+        script: String,
+        regex: String,
+        group: String,
+        metric: String,
+        operation: String,
+    ) {
+        self.analyze_input(script, regex, group, metric, operation, json!({}));
+    }
+
+    #[qslot]
+    fn analyze_input(
+        &mut self,
+        script: String,
+        regex: String,
+        group: String,
+        metric: String,
+        operation: String,
+        settings: Value,
+    ) {
+        let query = match settings.get("query") {
+            None => None,
+            Some(Value::String(text)) => Some(text.clone()),
+            _ => {
+                self.analysis_worker = None;
+                self.analysis_busy = false;
+                self.analysis_result = json!({"error":"Query must be a string"});
+                self.analysis_changed();
+                return;
+            }
+        };
+        let input = match analysis::InputConfig::from_value(&settings) {
+            Ok(input) => input,
+            Err(error) => {
+                // Discard previous work so it cannot replace the validation error.
+                self.analysis_worker = None;
+                self.analysis_busy = false;
+                self.analysis_result = json!({"error":error});
+                self.analysis_changed();
+                return;
+            }
+        };
+        if self.analysis_worker.is_none() {
+            if let Some(session) = &self.session {
+                self.analysis_worker = Some(session.analysis_worker());
+            } else {
+                self.analysis_result = json!({"error":"No log session"});
+                self.analysis_changed();
+                return;
+            }
+        }
+        self.analysis_generation =
+            self.analysis_worker
+                .as_ref()
+                .unwrap()
+                .submit(analysis::Config {
+                    script,
+                    regex,
+                    group,
+                    metric,
+                    operation,
+                    input,
+                    query,
+                });
+        self.analysis_busy = true;
+        self.analysis_changed();
+    }
+
+    #[qslot]
+    fn stop_analysis(&mut self) {
+        self.analysis_worker = None;
+        self.analysis_busy = false;
+        self.analysis_changed();
+    }
     qproperty!("text", Member = text, Notify = changed);
+    qproperty!("displayText", Member = display_text, Notify = changed);
     qproperty!(
         "highlightedText",
         Member = highlighted_text,
@@ -137,7 +251,7 @@ impl LogBackend {
         i18n::text(&self.status)
     }
     fn selected_position(&self) -> i32 {
-        trap::context_position(&self.text, self.selected_line)
+        trap::context_position(&self.display_text, self.selected_line)
     }
     fn translated_summary(&self) -> String {
         i18n::text(&self.summary)
@@ -189,7 +303,13 @@ impl LogBackend {
             session.set_trap_rules(self.trap_rules.clone());
         }
         if self.view_active {
-            self.highlighted_text = trap::highlight_rules(&self.text, &self.trap_rules);
+            self.display_text = if self.syslog_badges {
+                syslog::display_text(&self.text)
+            } else {
+                self.text.clone()
+            };
+            self.highlighted_text =
+                trap::highlight_syslog(&self.text, &self.trap_rules, self.syslog_badges);
         }
         self.changed();
         String::new()
@@ -197,7 +317,25 @@ impl LogBackend {
 
     #[qslot]
     fn highlight_result(&self, text: String) -> String {
-        trap::highlight_rules(&text, &self.trap_rules)
+        trap::highlight_syslog(&text, &self.trap_rules, self.syslog_badges)
+    }
+
+    #[qslot]
+    fn set_syslog_badges(&mut self, enabled: bool) {
+        if self.syslog_badges == enabled {
+            return;
+        }
+        self.syslog_badges = enabled;
+        self.query.filter.syslog_labels = enabled;
+        self.display_text = if enabled {
+            syslog::display_text(&self.text)
+        } else {
+            self.text.clone()
+        };
+        self.highlighted_text = trap::highlight_syslog(&self.text, &self.trap_rules, enabled);
+        self.view_revision += 1;
+        self.submit();
+        self.changed();
     }
 
     #[qslot]
@@ -235,6 +373,17 @@ impl LogBackend {
             command,
             u64::from(capacity_mib.max(1)) * 1024 * 1024,
             &self.input_encoding,
+        ));
+    }
+
+    #[qslot]
+    fn listen_syslog(&mut self, endpoint: String, capacity_mib: u32) {
+        // Release the previous socket before binding the same endpoint again.
+        self.stop();
+        self.input_encoding = "UTF-8".into();
+        self.install(Session::syslog_udp(
+            endpoint,
+            u64::from(capacity_mib.max(1)) * 1024 * 1024,
         ));
     }
 
@@ -319,6 +468,7 @@ impl LogBackend {
         self.selected_line = None;
         self.query.context = None;
         self.text.clear();
+        self.display_text.clear();
         self.line_ids = json!([]);
         self.view_revision += 1;
         self.view_generation = 0;
@@ -345,6 +495,14 @@ impl LogBackend {
 
     #[qslot]
     fn poll(&mut self) {
+        if let Some(worker) = &self.analysis_worker
+            && let Some(result) = worker.take()
+            && result["generation"].as_u64() == Some(self.analysis_generation)
+        {
+            self.analysis_result = result;
+            self.analysis_busy = false;
+            self.analysis_changed();
+        }
         if let Some((_, _, connection)) = &self.pending {
             if connection.transport.is_ready() {
                 let (options, limit, connection) = self.pending.take().unwrap();
@@ -397,7 +555,13 @@ impl LogBackend {
                 self.text = view.text;
                 self.line_ids = json!(view.line_ids);
                 self.selected_line = self.query.context;
-                self.highlighted_text = trap::highlight_rules(&self.text, &self.trap_rules);
+                self.display_text = if self.syslog_badges {
+                    syslog::display_text(&self.text)
+                } else {
+                    self.text.clone()
+                };
+                self.highlighted_text =
+                    trap::highlight_syslog(&self.text, &self.trap_rules, self.syslog_badges);
                 self.results = view.results;
                 self.summary = view.summary;
             }
@@ -468,6 +632,7 @@ impl LogBackend {
     #[qslot]
     fn set_filter(&mut self, text: String, regex: bool, ignore_case: bool, invert: bool) {
         self.query.filter = session::pattern(text, regex, ignore_case, invert);
+        self.query.filter.syslog_labels = self.syslog_badges;
         self.query.context = None;
         self.submit();
     }
@@ -483,6 +648,7 @@ impl LogBackend {
     ) {
         self.query.filter = session::pattern(text, regex, ignore_case, invert);
         self.query.filter.numeric = condition;
+        self.query.filter.syslog_labels = self.syslog_badges;
         self.query.context = None;
         self.submit();
     }
@@ -517,6 +683,8 @@ impl LogBackend {
 
     #[qslot]
     fn stop(&mut self) {
+        self.analysis_result = json!({});
+        self.stop_analysis();
         self.connected = false;
         self.pending = None;
         if let Some(session) = self.session.take() {
@@ -552,11 +720,25 @@ fn main() {
         .register::<workspace::Workspace>()
         .register::<i18n::Translations>()
         .set_initial_property(
+            "syslogTestEndpoint",
+            &QString::from(
+                args.iter()
+                    .position(|arg| arg == "--syslog-test")
+                    .and_then(|index| args.get(index + 1))
+                    .map(String::as_str)
+                    .unwrap_or(""),
+            ),
+        )
+        .set_initial_property(
             "localCommandTest",
             &args.iter().any(|arg| arg == "--local-command-test"),
         )
         .set_initial_property("i18nTestLanguage", &QString::from(i18n_test_language))
         .set_initial_property("tabUiTest", &args.iter().any(|arg| arg == "--tab-ui-test"))
+        .set_initial_property(
+            "analysisPresetRestoreTest",
+            &args.iter().any(|arg| arg == "--analysis-preset-restore"),
+        )
         .set_initial_property(
             "numericTest",
             &args.iter().any(|arg| arg == "--numeric-test"),
@@ -582,6 +764,16 @@ fn main() {
             ),
         )
         .set_initial_property("smokePath", &QString::from(smoke_path.as_str()))
+        .set_initial_property(
+            "analysisTestPath",
+            &QString::from(
+                args.iter()
+                    .position(|arg| arg == "--analysis-test")
+                    .and_then(|i| args.get(i + 1))
+                    .map(String::as_str)
+                    .unwrap_or(""),
+            ),
+        )
         .set_initial_property(
             "connectionUiTest",
             &args.iter().any(|arg| arg == "--connection-ui-test"),

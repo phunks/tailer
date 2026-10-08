@@ -163,6 +163,12 @@ pub fn sanitize(value: &Value) -> Value {
                     .to_string()
                 );
                 clean["runUser"] = json!(tab["runUser"].as_str().unwrap_or("root"));
+                clean["analysisPresetId"] = json!(
+                    tab["analysisPresetId"]
+                        .as_str()
+                        .filter(|id| !id.is_empty() && id.len() <= 128)
+                        .unwrap_or("builtin-access")
+                );
                 // Old workspaces have no source field: migrate them as file tabs.
                 clean["source"] = json!(tab["source"].as_str().unwrap_or("file"));
                 let encoding = tab["encoding"].as_str().unwrap_or("UTF-8");
@@ -179,6 +185,8 @@ pub fn sanitize(value: &Value) -> Value {
                     "searchRegex",
                     "searchCase",
                     "trapCase",
+                    "analysisMergeFirstColumn",
+                    "syslogBadges",
                 ] {
                     clean[name] = json!(tab[name].as_bool().unwrap_or(false));
                 }
@@ -263,7 +271,8 @@ pub fn sanitize(value: &Value) -> Value {
     json!({"version": 2, "appearance": if ["auto", "light", "dark"].contains(&appearance) { appearance } else { "auto" }, "language": if crate::i18n::LANGUAGES.contains(&language) { language } else { "" }, "connections":connections, "initialLines": bounded_int(&value["initialLines"], 50, 0, 1000000),
         "capacityMiB": bounded_int(&value["capacityMiB"], 512, 1, 10240),
         "currentIndex": bounded_int(&value["currentIndex"], 0, 0, tabs.len().saturating_sub(1) as u64),
-        "width": bounded_int(&value["width"], 1100, 640, 4096), "height": bounded_int(&value["height"], 720, 480, 2160), "tabs": tabs, "bookmarks": bookmarks, "bookmarkGroups":groups})
+        "width": bounded_int(&value["width"], 1100, 640, 4096), "height": bounded_int(&value["height"], 720, 480, 2160), "tabs": tabs, "bookmarks": bookmarks, "bookmarkGroups":groups,
+        "analysisPresets":crate::analysis_presets::sanitize(&value["analysisPresets"])})
 }
 
 fn save_file(path: &Path, value: &Value) -> io::Result<()> {
@@ -358,6 +367,49 @@ impl Default for Workspace {
 
 #[qobject]
 impl Workspace {
+    qproperty!("analysisPresets", Read = analysis_presets, Notify = changed);
+    fn analysis_presets(&self) -> Value {
+        let mut rows = crate::analysis_presets::defaults();
+        for mut row in self.state["analysisPresets"].as_array().unwrap().clone() {
+            row["builtin"] = json!(false);
+            rows.push(row);
+        }
+        json!(rows)
+    }
+
+    fn persist_analysis_presets(&mut self, presets: Value) -> Result<(), String> {
+        let path = self
+            .disk_path
+            .as_ref()
+            .ok_or("Configuration saving is unavailable")?;
+        let mut next = self.state.clone();
+        next["analysisPresets"] = presets;
+        save_file(path, &next).map_err(|e| format!("Cannot save presets: {e}"))?;
+        self.state = sanitize(&next);
+        self.changed();
+        Ok(())
+    }
+
+    #[qslot]
+    fn save_analysis_preset(&mut self, id: String, name: String, settings: Value) -> Value {
+        match crate::analysis_presets::upsert(&self.state["analysisPresets"], &id, &name, &settings)
+            .and_then(|(presets, id)| self.persist_analysis_presets(presets).map(|_| id))
+        {
+            Ok(id) => json!({"id":id}),
+            Err(error) => json!({"error":error}),
+        }
+    }
+
+    #[qslot]
+    fn delete_analysis_preset(&mut self, id: String) -> Value {
+        match crate::analysis_presets::remove(&self.state["analysisPresets"], &id)
+            .and_then(|presets| self.persist_analysis_presets(presets))
+        {
+            Ok(()) => json!({"ok":true}),
+            Err(error) => json!({"error":error}),
+        }
+    }
+
     qproperty!("state", Member = state, Notify = changed);
     qproperty!("error", Read = translated_error, Notify = changed);
     fn translated_error(&self) -> String {
@@ -373,6 +425,10 @@ impl Workspace {
     #[qslot]
     fn save(&mut self, value: Value) {
         let Some(path) = &self.disk_path else { return };
+        // The preset store owns this collection. Stale QML workspace snapshots
+        // must never overwrite a preset saved immediately by the editor.
+        let mut value = value;
+        value["analysisPresets"] = self.state["analysisPresets"].clone();
         if let Err(error) = save_file(path, &value) {
             self.error = format!("Cannot save configuration: {error}");
         } else {
@@ -385,7 +441,85 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn merge_first_column_tab_setting_round_trips_and_defaults_off() {
+        let clean = sanitize(&serde_json::json!({"tabs": [
+            {"analysisMergeFirstColumn": true}, {"analysisMergeFirstColumn": false},
+            {}, {"analysisMergeFirstColumn": "true"}
+        ]}));
+        assert_eq!(clean["tabs"][0]["analysisMergeFirstColumn"], true);
+        for index in 1..4 {
+            assert_eq!(clean["tabs"][index]["analysisMergeFirstColumn"], false);
+        }
+        assert_eq!(sanitize(&clean), clean);
+    }
     use super::*;
+    #[test]
+    fn syslog_endpoints_round_trip_in_tabs_and_bookmarks() {
+        let clean = sanitize(&json!({
+            "tabs": [{"source":"syslog-udp", "logPath":"127.0.0.1:1514", "remote":false, "syslogBadges":true}],
+            "bookmarks": [{"source":"syslog-udp", "logPath":"[::1]:1514", "remote":false, "syslogBadges":true}]
+        }));
+        assert_eq!(clean["tabs"][0]["source"], "syslog-udp");
+        assert_eq!(clean["tabs"][0]["logPath"], "127.0.0.1:1514");
+        assert_eq!(clean["bookmarks"][0]["logPath"], "[::1]:1514");
+        assert_eq!(clean["tabs"][0]["syslogBadges"], true);
+        assert_eq!(clean["bookmarks"][0]["syslogBadges"], true);
+        assert_eq!(sanitize(&clean), clean);
+    }
+    #[test]
+    fn analysis_preset_selection_round_trips_per_tab_and_bookmark() {
+        let clean = sanitize(&json!({
+            "tabs": [{"analysisPresetId":"custom-one"}, {"analysisPresetId":"builtin-apache"},
+                {}, {"analysisPresetId":""}, {"analysisPresetId":42},
+                {"analysisPresetId":"x".repeat(129)}],
+            "bookmarks": [{"analysisPresetId":"custom-one"}]
+        }));
+        assert_eq!(clean["tabs"][0]["analysisPresetId"], "custom-one");
+        assert_eq!(clean["tabs"][1]["analysisPresetId"], "builtin-apache");
+        for index in 2..6 {
+            assert_eq!(clean["tabs"][index]["analysisPresetId"], "builtin-access");
+        }
+        assert_eq!(clean["bookmarks"][0]["analysisPresetId"], "custom-one");
+        assert_eq!(sanitize(&clean), clean);
+    }
+    #[test]
+    fn analysis_presets_survive_disk_and_unrelated_workspace_saves() {
+        let directory =
+            std::env::temp_dir().join(format!("tailer-preset-test-{}", std::process::id()));
+        let path = directory.join("workspace.json");
+        let mut workspace = Workspace {
+            state: sanitize(&json!({})),
+            error: String::new(),
+            path: path.display().to_string(),
+            disk_path: Some(path.clone()),
+        };
+        let mut settings = crate::analysis_presets::defaults()[0]["settings"].clone();
+        settings["filter"] = json!("checkpoint complete:");
+        settings["query"] = json!("avg(total), count()");
+        settings["password"] = json!("secret");
+        let result = workspace.save_analysis_preset("".into(), "Test".into(), settings.clone());
+        assert!(result.get("error").is_none(), "{result}");
+        let id = result["id"].as_str().unwrap().to_owned();
+        workspace.save(json!({"tabs":[],"analysisPresets":[]}));
+        let restored: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(restored["analysisPresets"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            restored["analysisPresets"][0]["settings"]["query"],
+            "avg(total), count()"
+        );
+        assert!(!restored.to_string().contains("secret"));
+        workspace.state = sanitize(&restored);
+        assert_eq!(workspace.analysis_presets().as_array().unwrap().len(), 4);
+        assert!(
+            workspace
+                .delete_analysis_preset("builtin-access".into())
+                .get("error")
+                .is_some()
+        );
+        assert_eq!(workspace.delete_analysis_preset(id)["ok"], true);
+        fs::remove_dir_all(directory).unwrap();
+    }
     #[test]
     fn numeric_and_background_settings_round_trip_in_tabs_and_bookmarks() {
         let condition = json!({"capture":1,"operator":">","value":"100"});

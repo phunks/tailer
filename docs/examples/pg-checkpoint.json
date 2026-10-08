@@ -1,0 +1,28 @@
+{
+  "id": "builtin-pg-checkpoint",
+  "name": "pg_checkpoint",
+  "builtin": true,
+  "settings": {
+    "delimiter": ",",
+    "exclude": false,
+    "fields": [
+      {"name": "wrote", "required": true, "source": "wrote", "type": "number"},
+      {"name": "timestamp", "required": true, "source": "timestamp", "type": "text"},
+      {"name": "wal", "required": true, "source": "wal", "type": "number"},
+      {"name": "write", "required": true, "source": "write", "type": "number"},
+      {"name": "sync", "required": true, "source": "sync", "type": "number"},
+      {"name": "total", "required": true, "source": "total", "type": "number"},
+      {"name": "distance", "required": true, "source": "distance", "type": "number"},
+      {"name": "estimate", "required": true, "source": "estimate", "type": "number"}
+    ],
+    "filter": "checkpoint complete:",
+    "filterMode": "contains",
+    "format": "regex",
+    "ignoreCase": false,
+    "mergeFirstColumn": false,
+    "query": "dt, max(wal), avg(write_sec), avg(sync_sec), avg(total_sec), max(total_sec), sum(wrote_kb), max(distance_mb), max(estimate_mb)",
+    "regex": "^(?P<timestamp>[^ ]+) .*?wrote (?P<wrote>\\d+) buf.*?;\\s(?P<wal>\\d+)\\sWAL.*?write=(?P<write>[0-9]+(?:\\.[0-9]+)?)\\s+s,\\s+sync=(?P<sync>[0-9]+(?:\\.[0-9]+)?)\\s+s,\\s+total=(?P<total>[0-9]+(?:\\.[0-9]+)?)\\s+s;.*?distance=(?P<distance>\\d+)\\skB,\\sestimate=(?P<estimate>\\d+)\\skB",
+    "script": "fn parse(c: Captures) -> Record {\n    let dt = Datetime.parse_rfc3339(c.text(\"timestamp\")).to_local();\n    let minute = dt.floor_minutes(30).format(\"%Y-%m-%d %H:%M\");\n    if minute == \"\" {\n        return Record.skip();\n    }\n    Record.new()\n        .text(\"event\", \"checkpoint\")\n        .text(\"dt\", minute)\n        .number(\"wrote_kb\", c.number(\"wrote\") * 8.0)\n        .number(\"write_sec\", c.number(\"write\"))\n        .number(\"wal\", c.number(\"wal\"))\n        .number(\"sync_sec\", c.number(\"sync\"))\n        .number(\"total_sec\", c.number(\"total\"))\n        .number(\"distance_mb\", c.number(\"distance\") / 1024.0)\n        .number(\"estimate_mb\", c.number(\"estimate\") / 1024.0)\n}",
+    "useRoto": true
+  }
+}

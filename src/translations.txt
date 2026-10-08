@@ -1,4 +1,60 @@
 # English|Japanese|Simplified Chinese|Traditional Chinese|Korean
+Syslog labels|Syslogラベル|Syslog标签|Syslog標籤|Syslog 레이블
+Syslog…|Syslog受信…|接收Syslog…|接收Syslog…|Syslog 수신…
+Syslog (UDP)|Syslog受信（UDP）|Syslog接收（UDP）|Syslog接收（UDP）|Syslog 수신 (UDP)
+Listen endpoint (IP:port)|待受先（IP:ポート）|监听地址（IP:端口）|監聽位址（IP:連接埠）|수신 주소 (IP:포트)
+Receives raw UTF-8 syslog over UDP. Use 0.0.0.0:1514 for LAN devices. No authentication; restrict access with your firewall. Saved listeners restart on startup.|UDPでSyslog原文をUTF-8として受信します。LAN機器から受ける場合は0.0.0.0:1514などを指定してください。認証はありません。ファイアウォールでアクセスを制限してください。保存した待受は起動時に再開します。|通过UDP接收原始UTF-8 Syslog。局域网设备可使用0.0.0.0:1514。无身份验证，请通过防火墙限制访问。保存的监听器将在启动时重启。|透過UDP接收原始UTF-8 Syslog。區域網路設備可使用0.0.0.0:1514。無身分驗證，請透過防火牆限制存取。儲存的監聽器將在啟動時重新啟動。|UDP로 UTF-8 Syslog 원문을 수신합니다. LAN 장치는 0.0.0.0:1514를 사용하세요. 인증이 없으므로 방화벽으로 접근을 제한하세요. 저장된 수신기는 시작 시 다시 시작됩니다.
+Listening · UDP {}|待受中 · UDP {}|监听中 · UDP {}|監聽中 · UDP {}|수신 대기 · UDP {}
+Use an IP address and port, e.g. 127.0.0.1:1514|IPアドレスとポートを指定してください（例: 127.0.0.1:1514）|请指定IP地址和端口，例如127.0.0.1:1514|請指定IP位址和連接埠，例如127.0.0.1:1514|IP 주소와 포트를 지정하세요 (예: 127.0.0.1:1514)
+Syslog port must be between 1 and 65535|Syslogのポートは1〜65535で指定してください|Syslog端口必须在1到65535之间|Syslog連接埠必須介於1到65535之間|Syslog 포트는 1~65535여야 합니다
+UDP receive failed: {}|UDP受信に失敗しました: {}|UDP接收失败: {}|UDP接收失敗: {}|UDP 수신 실패: {}
+Analysis preset|分析プリセット|分析预设|分析預設|분석 프리셋
+Default|標準|默认|預設|기본
+Preset name|プリセット名|预设名称|預設名稱|프리셋 이름
+Save as new preset|新しいプリセットとして保存|保存为新预设|儲存為新預設|새 프리셋으로 저장
+Overwrite preset|プリセットを上書き|覆盖预设|覆寫預設|프리셋 덮어쓰기
+Delete preset|プリセットを削除|删除预设|刪除預設|프리셋 삭제
+Delete preset?|プリセットを削除しますか？|删除预设？|刪除預設？|프리셋을 삭제할까요?
+Result columns|結果列|结果列|結果欄|결과 열
+Plain fields group rows; aggregates: avg, max, min, sum, count().|通常フィールドはグループ化。集計: avg、max、min、sum、count()。|普通字段用于分组；聚合：avg、max、min、sum、count()。|一般欄位用於分組；彙總：avg、max、min、sum、count()。|일반 필드는 그룹화; 집계: avg, max, min, sum, count().
+Pre-extraction line filter|抽出前の行フィルター|提取前行过滤器|擷取前行篩選器|추출 전 줄 필터
+Contains|含む|包含|包含|포함
+Starts with|前方一致|开头匹配|開頭符合|접두사
+Exclude matches|一致行を除外|排除匹配行|排除符合行|일치 줄 제외
+Extraction format|抽出形式|提取格式|擷取格式|추출 형식
+Delimiter|区切り文字|分隔符|分隔字元|구분자
+Whitespace|空白区切り|空白分隔|空白分隔|공백 구분
+Delimiter (tab: \\t)|区切り文字（タブ: \t）|分隔符（制表符: \t）|分隔字元（定位字元: \t）|구분자 (탭: \t)
+Field mappings (JSON array; columns start at 0)|フィールド定義（JSON配列・列は0始まり）|字段映射（JSON数组；列从0开始）|欄位映射（JSON陣列；欄從0開始）|필드 매핑 (JSON 배열; 열은 0부터)
+Source: capture name, column index, or JSON Pointer. Empty mappings preserve regex captures.|抽出元: キャプチャ名・列番号・JSON Pointer。定義が空の場合は正規表現キャプチャを保持します。|来源：捕获名、列索引或JSON Pointer。空映射保留正则捕获。|來源：擷取名稱、欄索引或JSON Pointer。空映射保留正規擷取。|소스: 캡처 이름, 열 인덱스 또는 JSON Pointer. 빈 매핑은 정규식 캡처를 유지합니다.
+Enable Roto transformation|Rotoによる加工を有効にする|启用Roto转换|啟用Roto轉換|Roto 변환 사용
+Input preview (first 5 lines; after applying)|入力プレビュー（適用後・先頭5行）|输入预览（应用后前5行）|輸入預覽（套用後前5行）|입력 미리보기 (적용 후 첫 5줄)
+Invalid field mappings|フィールド定義が不正です|字段映射无效|欄位映射無效|잘못된 필드 매핑
+Analyze…|分析…|分析…|分析…|분석…
+Log analysis (Roto)|ログ分析（Roto）|日志分析（Roto）|日誌分析（Roto）|로그 분석 (Roto)
+Analyze retained logs, independently of the display filter. Updates every 2 seconds after completion.|表示フィルターとは独立して保持ログを分析します。処理完了後2秒間隔で更新します。|独立于显示过滤器分析保留日志。完成后每2秒更新。|獨立於顯示篩選器分析保留日誌。完成後每2秒更新。|표시 필터와 별도로 보관 로그를 분석합니다. 완료 후 2초 간격으로 갱신합니다.
+Apply / recalculate|適用／再集計|应用／重新统计|套用／重新統計|적용 / 재집계
+Stop analysis|分析を停止|停止分析|停止分析|분석 중지
+Extraction regex (named captures)|抽出の正規表現（名前付きキャプチャ）|提取正则表达式（命名捕获）|擷取正規表示式（具名擷取）|추출 정규식 (이름 있는 캡처)
+Group field|分類項目|分组字段|分類欄位|그룹 필드
+Empty = all|空欄＝全体|留空＝全部|留空＝全部|빈 값 = 전체
+Numeric field|数値項目|数值字段|數值欄位|숫자 필드
+Count|件数|数量|筆數|건수
+Sum|合計|总和|總和|합계
+Average|平均|平均值|平均值|평균
+Minimum|最小|最小值|最小值|최솟값
+Maximum|最大|最大值|最大值|최댓값
+Retained log statistics|保持ログの統計|保留日志统计|保留日誌統計|보관 로그 통계
+Accepted|集計対象|已统计|已統計|집계 대상
+Skipped|除外|已跳过|已略過|제외
+Unmatched|不一致|不匹配|不符合|불일치
+Errors|エラー|错误|錯誤|오류
+Lines|行|行|行|행
+Value|値|值|值|값
+Text display|テキスト表示|文本显示|文字顯示|텍스트 표시
+Merge repeated first-column values|1列目の同じ値をまとめて表示|合并第一列的连续相同值|合併第一欄的連續相同值|첫 열의 연속된 같은 값 병합
+Diagnostic samples|診断サンプル|诊断样本|診斷樣本|진단 샘플
+Diagnostic samples (up to 5; log text shortened)|診断サンプル（最大5件・ログ本文は短縮）|诊断样本（最多5条；日志文本已缩短）|診斷樣本（最多5筆；日誌文字已縮短）|진단 샘플 (최대 5개; 로그 텍스트 축약)
 Enable|有効|启用|啟用|활성화
 Numeric condition|数値条件|数值条件|數值條件|숫자 조건
 Capture group|キャプチャ番号|捕获组|擷取群組|캡처 그룹

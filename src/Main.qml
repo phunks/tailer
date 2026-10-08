@@ -13,10 +13,13 @@ ApplicationWindow {
     visible: true
     title: "Tailer"
     property string smokePath: ""
+    property string analysisTestPath: ""
+    property bool analysisPresetRestoreTest: false
     property bool restoreTest: false
     property bool connectionUiTest: false
     property string i18nTestLanguage: ""
     property bool localCommandTest: false
+    property string syslogTestEndpoint: ""
     property string bookmarkTestMode: ""
     property string themeTestMode: ""
     property bool tabUiTest: false
@@ -234,6 +237,9 @@ ApplicationWindow {
             searchRegex: row.searchRegex,
             searchCase: row.searchCase,
             follow: row.follow,
+            analysisPresetId: row.analysisPresetId || "builtin-access",
+            analysisMergeFirstColumn: row.analysisMergeFirstColumn === true,
+            syslogBadges: row.syslogBadges === true,
             trapRulesJson: row.trapRulesJson
         };
     }
@@ -324,7 +330,10 @@ ApplicationWindow {
             searchText: "",
             searchRegex: false,
             searchCase: false,
-            follow: true
+            follow: true,
+            analysisPresetId: "builtin-access",
+            analysisMergeFirstColumn: false,
+            syslogBadges: false
         });
         tabs.currentIndex = logs.count - 1;
         scheduleSave();
@@ -735,7 +744,7 @@ ApplicationWindow {
             tabIndex = index;
             remote = row.remote;
             editLogTitle.text = row.logTitle;
-            editSource.currentIndex = row.source === "custom" ? 2 : (row.source === "docker" ? 1 : 0);
+            editSource.currentIndex = ["file", "docker", "custom", "syslog-udp"].indexOf(row.source);
             editLogPath.text = row.logPath;
             editEncoding.currentIndex = root.encodingOptions.indexOf(row.encoding);
             editProfile.currentIndex = -1;
@@ -758,16 +767,16 @@ ApplicationWindow {
             const index = tabIndex;
             if (index < 0 || index >= logs.count) return;
             const previous = logs.get(index);
-            const encodingOnly = previous.source === ["file", "docker", "custom"][editSource.currentIndex]
+            const encodingOnly = editSource.currentIndex !== 3 && previous.source === ["file", "docker", "custom", "syslog-udp"][editSource.currentIndex]
                 && previous.logPath === editLogPath.text
                 && (!remote || previous.connectionId === connectionProfiles.get(editProfile.currentIndex).id)
                 && previous.elevation === editElevation.currentIndex && previous.runUser === editRunUser.text
                 && previous.initial === editInitial.value && previous.capacity === editCapacity.value
                 && previous.encoding !== editEncoding.currentText;
             logs.setProperty(index, "logTitle", editLogTitle.text.trim() || logs.get(index).logTitle);
-            logs.setProperty(index, "source", ["file", "docker", "custom"][editSource.currentIndex]);
+            logs.setProperty(index, "source", ["file", "docker", "custom", "syslog-udp"][editSource.currentIndex]);
             logs.setProperty(index, "logPath", editLogPath.text);
-            logs.setProperty(index, "encoding", editEncoding.currentText);
+            logs.setProperty(index, "encoding", editSource.currentIndex === 3 ? "UTF-8" : editEncoding.currentText);
             if (remote) logs.setProperty(index, "connectionId", connectionProfiles.get(editProfile.currentIndex).id);
             logs.setProperty(index, "elevation", editElevation.currentIndex);
             logs.setProperty(index, "runUser", editRunUser.text);
@@ -785,13 +794,15 @@ ApplicationWindow {
             TextField { id: editLogTitle; placeholderText: root.tr("Tab name (optional)"); Layout.fillWidth: true }
             ComboBox {
                 id: editSource
-                model: [root.tr("File (tail)"), root.tr("Docker container"), root.tr("Custom command")]
+                model: editTabDialog.remote
+                    ? [root.tr("File (tail)"), root.tr("Docker container"), root.tr("Custom command")]
+                    : [root.tr("File (tail)"), root.tr("Docker container"), root.tr("Custom command"), root.tr("Syslog (UDP)")]
                 Layout.fillWidth: true
                 onActivated: { if (!editTabDialog.remote && currentIndex === 1) currentIndex = 0; }
             }
             Label { visible: editTabDialog.remote; text: root.tr("Saved connection") }
             ComboBox { id: editProfile; visible: editTabDialog.remote; model: connectionProfiles; textRole: "name"; Layout.fillWidth: true }
-            Label { text: root.tr("Log path, container or command") }
+            Label { text: editSource.currentIndex === 3 ? root.tr("Listen endpoint (IP:port)") : root.tr("Log path, container or command") }
             ScrollView {
                 Layout.fillWidth: true
                 Layout.preferredHeight: editSource.currentIndex === 2 ? 120 : 60
@@ -799,7 +810,7 @@ ApplicationWindow {
             }
             RowLayout {
                 Label { text: root.tr("Input encoding") }
-                ComboBox { id: editEncoding; model: root.encodingOptions; Layout.fillWidth: true }
+                ComboBox { id: editEncoding; model: root.encodingOptions; Layout.fillWidth: true; enabled: editSource.currentIndex !== 3 }
             }
             RowLayout {
                 visible: editTabDialog.remote
@@ -808,7 +819,7 @@ ApplicationWindow {
                 TextField { id: editRunUser; enabled: editElevation.currentIndex !== 0; placeholderText: root.tr("Run as user"); Layout.fillWidth: true }
             }
             RowLayout {
-                visible: editSource.currentIndex !== 2
+                visible: editSource.currentIndex < 2
                 Label { text: root.tr("Initial tail lines") }
                 SpinBox { id: editInitial; from: 0; to: 1000000; editable: true }
             }
@@ -850,6 +861,32 @@ ApplicationWindow {
 
     ListModel {
         id: logs
+    }
+
+    Dialog {
+        id: syslogDialog
+        title: root.tr("Syslog (UDP)")
+        anchors.centerIn: parent
+        modal: true
+        width: Math.min(620, root.width - 40)
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        onOpened: {
+            root.translateButtons(syslogDialog);
+            standardButton(Dialog.Ok).enabled = Qt.binding(() => syslogEndpoint.text.trim() !== "");
+        }
+        onAccepted: root.addLog(syslogEndpoint.text.trim(), "syslog-udp",
+            syslogTitle.text.trim() || "Syslog UDP " + syslogEndpoint.text.trim(), "UTF-8")
+        ColumnLayout {
+            anchors.fill: parent
+            TextField { id: syslogTitle; placeholderText: root.tr("Tab name (optional)"); Layout.fillWidth: true }
+            Label { text: root.tr("Listen endpoint (IP:port)") }
+            TextField { id: syslogEndpoint; text: "127.0.0.1:1514"; placeholderText: "0.0.0.0:1514 / [::]:1514"; Layout.fillWidth: true; selectByMouse: true }
+            Label {
+                text: root.tr("Receives raw UTF-8 syslog over UDP. Use 0.0.0.0:1514 for LAN devices. No authentication; restrict access with your firewall. Saved listeners restart on startup.")
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+        }
     }
 
     Dialog {
@@ -1075,7 +1112,10 @@ ApplicationWindow {
                 searchText: "",
                 searchRegex: false,
                 searchCase: false,
-                follow: true
+                follow: true,
+                analysisPresetId: "builtin-access",
+                analysisMergeFirstColumn: false,
+                syslogBadges: false
             });
             tabs.currentIndex = logs.count - 1;
             root.scheduleSave();
@@ -1283,6 +1323,10 @@ ApplicationWindow {
                 onClicked: localCommandDialog.open()
             }
             ToolButton {
+                text: root.tr("Syslog…")
+                onClicked: syslogDialog.open()
+            }
+            ToolButton {
                 text: root.tr("Connections…")
                 onClicked: profilesDialog.open()
             }
@@ -1316,6 +1360,8 @@ ApplicationWindow {
         spacing: 0
         TabBar {
             id: tabs
+            // The layout supplies the bar width; do not derive it from tab widths.
+            implicitWidth: 0
             onCurrentIndexChanged: {
                 if (root.movingTab) return;
                 if (currentIndex >= 0 && currentIndex < logs.count) {
@@ -1340,6 +1386,7 @@ ApplicationWindow {
                     property alias contextMenu: tabMenu
                     opacity: tabDrag.active ? 0.55 : 1
                     text: logTitle
+                    width: Math.min(Math.max(100, implicitWidth), 260, tabs.availableWidth)
                     rightPadding: 36
                     implicitHeight: Math.max(implicitBackgroundHeight + topInset + bottomInset,
                                              implicitContentHeight + topPadding + bottomPadding) + 6
@@ -1347,7 +1394,11 @@ ApplicationWindow {
                         implicitHeight: 21
                         color: tab.checked ? Qt.lighter(tab.palette.button, 1.50) : (tab.hovered ? Qt.lighter(tab.palette.button, 1.08) : tab.palette.button)
                         border.color: tab.palette.mid
-                        radius: 2
+                        topLeftRadius: 8
+                        topRightRadius: 8
+                        bottomLeftRadius: 0
+                        bottomRightRadius: 0
+                        antialiasing: true
                     }
                     TapHandler {
                         acceptedButtons: Qt.RightButton
@@ -1484,6 +1535,9 @@ ApplicationWindow {
                     required property bool searchRegex
                     required property bool searchCase
                     required property bool follow
+                    required property bool syslogBadges
+                    required property string analysisPresetId
+                    required property bool analysisMergeFirstColumn
                     required property string trapText
                     required property bool trapCase
                     required property string trapRulesJson
@@ -1533,13 +1587,20 @@ ApplicationWindow {
                         trapEditor.open();
                     }
                     property alias backend: backend
+                    function testSyslogLabels(enabled) {
+                        syslogBadgesToggle.checked = enabled;
+                        syslogBadgesToggle.toggled();
+                    }
                     function restartSource() {
                         backend.stop();
+                        backend.set_syslog_badges(page.source === "syslog-udp" && page.syslogBadges);
                         backend.set_encoding(page.encoding);
                         if (page.remote)
                             backend.connect_profile(root.profileById(page.connectionId), page.logPath, page.initial, page.capacity, page.elevation, page.runUser, page.source);
                         else if (page.source === "custom")
                             backend.run_local(page.logPath, page.capacity);
+                        else if (page.source === "syslog-udp")
+                            backend.listen_syslog(page.logPath, page.capacity);
                         else
                             backend.open(page.logPath, page.initial, page.capacity);
                         page.applyFilter();
@@ -1651,11 +1712,14 @@ ApplicationWindow {
                         id: backend
                         Component.onCompleted: {
                             set_view_active(page.viewActive);
+                            set_syslog_badges(page.source === "syslog-udp" && page.syslogBadges);
                             set_encoding(page.encoding);
                             if (page.remote)
                                 connect_profile(root.profileById(page.connectionId), page.logPath, page.initial, page.capacity, page.elevation, page.runUser, page.source);
                             else if (page.source === "custom")
                                 run_local(page.logPath, page.capacity);
+                            else if (page.source === "syslog-udp")
+                                listen_syslog(page.logPath, page.capacity);
                             else
                                 open(page.logPath, page.initial, page.capacity);
                             set_numeric_filter(page.filterEnabled ? page.filterText : "", page.filterRegex,
@@ -1684,6 +1748,778 @@ ApplicationWindow {
                         }
                     }
                     Component.onDestruction: backend.stop()
+                    function testAnalysisControls() {
+                        analysisDialog.open();
+                        analysisDialog.loadPreset(false);
+                        analysisDialog.apply();
+                    }
+                    function testAnalysisInput(format, filter, fields, metric, operation) {
+                        analysisFormat.currentIndex = format;
+                        analysisFilterMode.currentIndex = 0;
+                        analysisFilter.text = filter;
+                        analysisExclude.checked = false;
+                        analysisIgnoreCase.checked = false;
+                        analysisDelimiter.text = ",";
+                        analysisMappings.text = JSON.stringify(fields);
+                        analysisUseRoto.checked = false;
+                        analysisQuery.text = ["count()", "sum(" + metric + ")", "avg(" + metric + ")", "min(" + metric + ")", "max(" + metric + ")"][operation];
+                        analysisDialog.apply();
+                    }
+                    function testAnalysisQuery(text) {
+                        analysisDialog.loadPreset(false);
+                        analysisFilter.text = '"';
+                        analysisQuery.text = text;
+                        analysisDialog.apply();
+                    }
+                    function testSaveAnalysisPreset() {
+                        analysisMergeFirstToggle.checked = true;
+                        analysisDialog.rememberMergeFirstColumn();
+                        analysisPresetName.text = "Integration preset";
+                        if (!analysisDialog.savePreset(false)) return false;
+                        const id = analysisDialog.selectedPresetId;
+                        analysisQuery.text = "method, path, count()";
+                        if (!analysisDialog.savePreset(true)) return false;
+                        analysisDialog.loadPreset(true);
+                        if (analysisMergeFirstToggle.checked) return false;
+                        analysisDialog.loadSavedPreset(id);
+                        if (!analysisMergeFirstToggle.checked || !page.analysisMergeFirstColumn) return false;
+                        if (analysisQuery.text !== "method, path, count()" || analysisFilter.text !== '"') return false;
+                        analysisPresetName.text = "Temporary preset";
+                        if (!analysisDialog.savePreset(false)) return false;
+                        analysisDialog.deletePreset();
+                        analysisDialog.loadSavedPreset(id);
+                        // Tab override differs from its preset, and must survive restart.
+                        analysisMergeFirstToggle.checked = false;
+                        analysisDialog.rememberMergeFirstColumn();
+                        return analysisQuery.text === "method, path, count()"
+                            && logs.get(page.index).analysisPresetId === id;
+                    }
+                    function testSelectAnalysisPreset(id) {
+                        analysisDialog.loadSavedPreset(id);
+                        return logs.get(page.index).analysisPresetId === id;
+                    }
+                    function testRestoreAnalysisPreset() {
+                        const preset = workspace.analysisPresets.find(p => p.name === "Integration preset");
+                        if (!preset || workspace.analysisPresets.length !== 4) return false;
+                        if (preset.settings.mergeFirstColumn !== true || page.analysisMergeFirstColumn) return false;
+                        if (page.analysisPresetId !== preset.id) return false;
+                        analysisDialog.open();
+                        return analysisQuery.text === "method, path, count()"
+                            && analysisFilter.text === '"' && analysisUseRoto.checked
+                            && analysisFormat.currentIndex === 0 && !analysisMergeFirstToggle.checked;
+                    }
+                    function testRestoreOtherAnalysisPreset() {
+                        if (page.analysisPresetId !== "builtin-apache") return false;
+                        analysisDialog.open();
+                        if (analysisDialog.selectedPresetId !== "builtin-apache") return false;
+                        analysisDialog.loadSavedPreset("deleted-preset");
+                        return analysisDialog.selectedPresetId === "builtin-access"
+                            && logs.get(page.index).analysisPresetId === "builtin-access";
+                    }
+                    Dialog {
+                        id: analysisDialog
+                        parent: Overlay.overlay
+                        x: (parent.width - width) / 2
+                        y: (parent.height - height) / 2
+                        width: Math.min(900, root.width - 40)
+                        height: Math.min(900, root.height - 40)
+                        modal: false
+                        closePolicy: Popup.CloseOnEscape
+                        title: root.tr("Log analysis (Roto)")
+                        standardButtons: Dialog.Close
+                        readonly property real minimumResizeWidth: Math.min(640, parent.width)
+                        readonly property real minimumResizeHeight: Math.min(360, parent.height)
+                        MouseArea {
+                            id: analysisResizeHandle
+                            parent: analysisDialog.footer
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            width: 20
+                            height: 20
+                            z: 100
+                            cursorShape: Qt.SizeFDiagCursor
+                            property point pressPosition
+                            property real startWidth: 0
+                            property real startHeight: 0
+                            onPressed: mouse => {
+                                pressPosition = mapToItem(analysisDialog.parent, mouse.x, mouse.y);
+                                startWidth = analysisDialog.width;
+                                startHeight = analysisDialog.height;
+                                // Resizing must not recenter a dialog that has not been moved yet.
+                                analysisDialog.x = analysisDialog.x;
+                                analysisDialog.y = analysisDialog.y;
+                            }
+                            onPositionChanged: mouse => {
+                                if (!pressed) return;
+                                const position = mapToItem(analysisDialog.parent, mouse.x, mouse.y);
+                                analysisDialog.width = Math.max(analysisDialog.minimumResizeWidth,
+                                    Math.min(startWidth + position.x - pressPosition.x, analysisDialog.parent.width));
+                                analysisDialog.height = Math.max(analysisDialog.minimumResizeHeight,
+                                    Math.min(startHeight + position.y - pressPosition.y, analysisDialog.parent.height));
+                            }
+                            Repeater {
+                                model: 3
+                                delegate: Rectangle {
+                                    required property int index
+                                    width: 3 + index * 4
+                                    height: 1
+                                    rotation: -45
+                                    anchors.right: parent ? parent.right : undefined
+                                    anchors.bottom: parent ? parent.bottom : undefined
+                                    anchors.rightMargin: 3
+                                    anchors.bottomMargin: 4 + index * 3
+                                    color: analysisDialog.palette.mid
+                                }
+                            }
+                        }
+                        header: Label {
+                            id: analysisTitleBar
+                            text: analysisDialog.title
+                            font.bold: true
+                            padding: 12
+                            elide: Text.ElideRight
+                            background: Rectangle { color: analysisDialog.palette.button }
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                                property point pressPosition
+                                property real startX: 0
+                                property real startY: 0
+                                onPressed: mouse => {
+                                    pressPosition = mapToItem(analysisDialog.parent, mouse.x, mouse.y);
+                                    startX = analysisDialog.x;
+                                    startY = analysisDialog.y;
+                                }
+                                onPositionChanged: mouse => {
+                                    if (!pressed) return;
+                                    const position = mapToItem(analysisDialog.parent, mouse.x, mouse.y);
+                                    analysisDialog.x = Math.max(80 - analysisDialog.width,
+                                        Math.min(startX + position.x - pressPosition.x, analysisDialog.parent.width - 80));
+                                    analysisDialog.y = Math.max(0,
+                                        Math.min(startY + position.y - pressPosition.y, analysisDialog.parent.height - analysisTitleBar.height));
+                                }
+                            }
+                        }
+                        property bool initialized: false
+                        property string settingsError: ""
+                        property string selectedPresetId: "builtin-access"
+                        function rememberPreset() {
+                            logs.setProperty(page.index, "analysisPresetId", selectedPresetId);
+                            root.scheduleSave();
+                        }
+                        onSelectedPresetIdChanged: rememberPreset()
+                        readonly property var presetRows: workspace.analysisPresets
+                        readonly property var selectedPreset: presetRows.find(p => p.id === selectedPresetId)
+                        readonly property var statistics: backend.analysisResult
+                        function loadPreset(apache) {
+                            loadSavedPreset(apache ? "builtin-apache" : "builtin-access");
+                        }
+                        function rememberMergeFirstColumn() {
+                            logs.setProperty(page.index, "analysisMergeFirstColumn", analysisMergeFirstToggle.checked);
+                            root.scheduleSave();
+                        }
+                        function loadSavedPreset(id) {
+                            const preset = presetRows.find(p => p.id === id)
+                                || presetRows.find(p => p.id === "builtin-access");
+                            if (!preset) return;
+                            const s = preset.settings;
+                            selectedPresetId = preset.id;
+                            rememberPreset();
+                            analysisPresetName.text = preset.builtin ? "" : preset.name;
+                            analysisRegex.text = s.regex;
+                            analysisScript.text = s.script;
+                            analysisQuery.text = s.query;
+                            analysisFormat.currentIndex = ["regex", "delimiter", "whitespace", "json"].indexOf(s.format);
+                            analysisDelimiter.text = s.delimiter === "\t" ? "\\t" : s.delimiter;
+                            analysisFilter.text = s.filter;
+                            analysisFilterMode.currentIndex = ["contains", "prefix", "regex"].indexOf(s.filterMode);
+                            analysisMappings.text = JSON.stringify(s.fields, null, 2);
+                            analysisUseRoto.checked = s.useRoto;
+                            analysisExclude.checked = s.exclude;
+                            analysisIgnoreCase.checked = s.ignoreCase;
+                            analysisMergeFirstToggle.checked = s.mergeFirstColumn === true;
+                            rememberMergeFirstColumn();
+                            settingsError = "";
+                        }
+                        function editorSettings() {
+                            let fields;
+                            try {
+                                fields = JSON.parse(analysisMappings.text);
+                                if (!Array.isArray(fields)) throw new Error("Expected an array");
+                            } catch (e) {
+                                settingsError = root.tr("Invalid field mappings") + ": " + e;
+                                return null;
+                            }
+                            settingsError = "";
+                            return {
+                                    regex: analysisRegex.text,
+                                    script: analysisScript.text,
+                                    useRoto: analysisUseRoto.checked,
+                                    query: analysisQuery.text,
+                                    format: ["regex", "delimiter", "whitespace", "json"][analysisFormat.currentIndex],
+                                    delimiter: analysisDelimiter.text === "\\t" ? "\t" : analysisDelimiter.text,
+                                    filter: analysisFilter.text,
+                                    filterMode: ["contains", "prefix", "regex"][analysisFilterMode.currentIndex],
+                                    ignoreCase: analysisIgnoreCase.checked,
+                                    exclude: analysisExclude.checked,
+                                    mergeFirstColumn: analysisMergeFirstToggle.checked,
+                                    fields: fields
+                                };
+                        }
+                        function apply() {
+                            const s = editorSettings();
+                            if (!s) return;
+                            backend.analyze_input(s.useRoto ? s.script : "", s.regex, "", "", "count", s);
+                        }
+                        function savePreset(overwrite) {
+                            const s = editorSettings();
+                            if (!s) return false;
+                            const result = workspace.save_analysis_preset(overwrite ? selectedPresetId : "", analysisPresetName.text, s);
+                            if (result.error) { settingsError = result.error; return false; }
+                            selectedPresetId = result.id;
+                            analysisPresetName.text = selectedPreset.name;
+                            return true;
+                        }
+                        function deletePreset() {
+                            const result = workspace.delete_analysis_preset(selectedPresetId);
+                            if (result.error) { settingsError = result.error; return; }
+                            loadSavedPreset("builtin-access");
+                        }
+                        onOpened: {
+                            root.translateButtons(analysisDialog);
+                            if (!initialized) {
+                                const savedMerge = page.analysisMergeFirstColumn;
+                                loadSavedPreset(page.analysisPresetId);
+                                analysisMergeFirstToggle.checked = savedMerge;
+                                rememberMergeFirstColumn();
+                                initialized = true;
+                            }
+                            else if (!selectedPreset) loadPreset(false);
+                        }
+                        onRejected: close()
+                        contentItem: ScrollView {
+                          id: analysisContent
+                          clip: true
+                          contentWidth: availableWidth
+                          ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                          ColumnLayout {
+                            width: analysisContent.availableWidth
+                            height: Math.max(implicitHeight, analysisContent.availableHeight)
+                            spacing: 8
+                            Label {
+                                text: root.tr("Analyze retained logs, independently of the display filter. Updates every 2 seconds after completion.")
+                                wrapMode: Text.WordWrap
+                                Layout.fillWidth: true
+                            }
+                            RowLayout {
+                                Label { text: root.tr("Analysis preset") }
+                                ComboBox {
+                                    Layout.fillWidth: true
+                                    model: analysisDialog.presetRows.map(p => p.name + (p.builtin ? " [" + root.tr("Default") + "]" : ""))
+                                    currentIndex: analysisDialog.presetRows.findIndex(p => p.id === analysisDialog.selectedPresetId)
+                                    onActivated: analysisDialog.loadSavedPreset(analysisDialog.presetRows[currentIndex].id)
+                                }
+                                Item { Layout.fillWidth: true }
+                                Button {
+                                    id: analysisApplyButton
+                                    text: root.tr("Apply / recalculate")
+                                    palette.button: "#1D4F1D"
+                                    palette.buttonText: "#ffffff"
+                                    onClicked: analysisDialog.apply()
+                                }
+                                Button {
+                                    id: analysisStopButton
+                                    text: root.tr("Stop analysis")
+                                    palette.button: "#4F1916"
+                                    palette.buttonText: "#ffffff"
+                                    onClicked: backend.stop_analysis()
+                                }
+                            }
+                            RowLayout {
+                                TextField { id: analysisPresetName; Layout.fillWidth: true; placeholderText: root.tr("Preset name") }
+                                Button { text: root.tr("Save as new preset"); onClicked: analysisDialog.savePreset(false) }
+                                Button { text: root.tr("Overwrite preset"); enabled: !!analysisDialog.selectedPreset && !analysisDialog.selectedPreset.builtin; onClicked: analysisDialog.savePreset(true) }
+                                Button { text: root.tr("Delete preset"); enabled: !!analysisDialog.selectedPreset && !analysisDialog.selectedPreset.builtin; onClicked: analysisPresetDelete.open() }
+                            }
+                            RowLayout {
+                                Label { text: root.tr("Pre-extraction line filter") }
+                                ComboBox { id: analysisFilterMode; model: [root.tr("Contains"), root.tr("Starts with"), root.tr("Regex")] }
+                                TextField { id: analysisFilter; Layout.fillWidth: true; placeholderText: root.tr("Empty = all") }
+                                CheckBox { id: analysisExclude; text: root.tr("Exclude matches") }
+                                CheckBox { id: analysisIgnoreCase; text: root.tr("Ignore case") }
+                            }
+                            ToolButton {
+                                id: analysisExtractionToggle
+                                checkable: true
+                                text: (checked ? "▼ " : "▶ ") + root.tr("Extraction format")
+                                Accessible.name: text
+                            }
+                            ColumnLayout {
+                                id: analysisExtractionSection
+                                visible: analysisExtractionToggle.checked
+                                Layout.fillWidth: true
+                                spacing: 8
+                                RowLayout {
+                                    ComboBox { id: analysisFormat; model: [root.tr("Regex"), root.tr("Delimiter"), root.tr("Whitespace"), "JSON Lines"] }
+                                    TextField { id: analysisDelimiter; visible: analysisFormat.currentIndex === 1; text: ","; placeholderText: root.tr("Delimiter (tab: \\t)"); Layout.fillWidth: true }
+                                }
+                                Label { visible: analysisFormat.currentIndex === 0; text: root.tr("Extraction regex (named captures)") }
+                                TextField { id: analysisRegex; visible: analysisFormat.currentIndex === 0; Layout.fillWidth: true; selectByMouse: true }
+                                Label { text: root.tr("Field mappings (JSON array; columns start at 0)"); wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                                ScrollView {
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 75
+                                    TextArea {
+                                        id: analysisMappings; text: "[]"; font.family: "monospace"; selectByMouse: true; textFormat: TextEdit.PlainText
+                                        placeholderText: '[{"name":"total","source":"total","type":"number","required":true}]'
+                                    }
+                                }
+                                Label {
+                                    text: root.tr("Source: capture name, column index, or JSON Pointer. Empty mappings preserve regex captures.")
+                                    wrapMode: Text.WordWrap; Layout.fillWidth: true
+                                }
+                            }
+                            Label { visible: analysisDialog.settingsError !== ""; text: analysisDialog.settingsError; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                ToolButton {
+                                    id: analysisRotoToggle
+                                    checkable: true
+                                    text: (checked ? "▼ " : "▶ ") + root.tr("Enable Roto transformation")
+                                    Accessible.name: text
+                                }
+                                Item { Layout.fillWidth: true }
+                                CheckBox {
+                                    id: analysisUseRoto
+                                    checked: true
+                                    Accessible.name: root.tr("Enable Roto transformation")
+                                }
+                            }
+                            ScrollView {
+                                id: analysisRotoSection
+                                visible: analysisRotoToggle.checked && analysisUseRoto.checked
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 130
+                                TextArea {
+                                    id: analysisScript
+                                    font.family: "monospace"
+                                    wrapMode: TextEdit.NoWrap
+                                    selectByMouse: true
+                                    textFormat: TextEdit.PlainText
+                                }
+                            }
+                            ToolButton {
+                                id: analysisPreviewToggle
+                                checkable: true
+                                text: (checked ? "▼ " : "▶ ") + root.tr("Input preview (first 5 lines; after applying)")
+                                Accessible.name: text
+                            }
+                            ScrollView {
+                                id: analysisPreviewSection
+                                visible: analysisPreviewToggle.checked
+                                Layout.fillWidth: true; Layout.preferredHeight: 100
+                                TextArea {
+                                    readOnly: true; selectByMouse: true; font.family: "monospace"; textFormat: TextEdit.PlainText
+                                    text: JSON.stringify(analysisDialog.statistics.preview || [], null, 2)
+                                }
+                            }
+                            RowLayout {
+                                Label { text: root.tr("Result columns") }
+                                TextField { id: analysisQuery; Layout.fillWidth: true; text: "count()"; selectByMouse: true; placeholderText: "path, method, status, avg(elapsed), max(elapsed), count()" }
+                            }
+                            Label { text: root.tr("Plain fields group rows; aggregates: avg, max, min, sum, count()."); wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                            Label {
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
+                                text: analysisDialog.statistics.total !== undefined
+                                    ? root.tr("Retained log statistics") + ": " + analysisDialog.statistics.total
+                                        + " | " + root.tr("Accepted") + ": " + analysisDialog.statistics.matched
+                                        + " | " + root.tr("Skipped") + ": " + analysisDialog.statistics.skipped
+                                        + " | " + root.tr("Unmatched") + ": " + analysisDialog.statistics.unmatched
+                                        + " | " + root.tr("Errors") + ": " + analysisDialog.statistics.errors
+                                        + " | " + Number(analysisDialog.statistics.elapsedMs).toFixed(1) + " ms"
+                                        + " (JIT: " + Number(analysisDialog.statistics.compileMs).toFixed(1) + " ms)"
+                                        + " | " + root.tr("Lines") + ": " + (analysisDialog.statistics.firstLine ?? "—") + "–" + (analysisDialog.statistics.lastLine ?? "—")
+                                    : ""
+                            }
+                            RowLayout {
+                                id: analysisResultToolbar
+                                Layout.fillWidth: true
+                                CheckBox {
+                                    id: analysisTextToggle
+                                    text: root.tr("Text display")
+                                }
+                                CheckBox {
+                                    id: analysisMergeFirstToggle
+                                    text: root.tr("Merge repeated first-column values")
+                                    enabled: !analysisTextToggle.checked
+                                    checked: page.analysisMergeFirstColumn
+                                    onToggled: analysisDialog.rememberMergeFirstColumn()
+                                }
+                                Item { Layout.fillWidth: true }
+                                // Reserve the slot even while idle so neither toolbar nor results jump.
+                                Item {
+                                    Layout.minimumWidth: 24
+                                    Layout.maximumWidth: 24
+                                    Layout.minimumHeight: 24
+                                    Layout.maximumHeight: 24
+                                    BusyIndicator {
+                                        id: analysisResultBusy
+                                        anchors.fill: parent
+                                        running: backend.analysisBusy
+                                        visible: running
+                                    }
+                                }
+                            }
+                            ColumnLayout {
+                                id: analysisResultSection
+                                visible: !analysisTextToggle.checked
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                Layout.minimumHeight: 80
+                                Layout.preferredHeight: 180
+                                spacing: 0
+                                readonly property var columns: analysisDialog.statistics.columns || []
+                                property string sortColumn: ""
+                                property bool sortDescending: false
+                                function sortBy(column) {
+                                    if (sortColumn !== column) {
+                                        sortDescending = false;
+                                        sortColumn = column;
+                                    } else if (!sortDescending) {
+                                        sortDescending = true;
+                                    } else {
+                                        sortColumn = "";
+                                        sortDescending = false;
+                                    }
+                                }
+                                readonly property var sortedRows: {
+                                    const rows = analysisDialog.statistics.rows || [];
+                                    const column = columns.indexOf(sortColumn);
+                                    if (column < 0) return rows;
+                                    const direction = sortDescending ? -1 : 1;
+                                    // Sort a copy, using the source index to keep equal values stable.
+                                    return rows.map((row, index) => ({row: row, index: index})).sort((a, b) => {
+                                        const left = (a.row.cells || [])[column];
+                                        const right = (b.row.cells || [])[column];
+                                        // Missing values remain last in either direction.
+                                        if (left == null || right == null) {
+                                            if (left != null) return -1;
+                                            if (right != null) return 1;
+                                            return a.index - b.index;
+                                        }
+                                        const comparison = typeof left === "number" && typeof right === "number"
+                                            ? (left < right ? -1 : left > right ? 1 : 0)
+                                            : String(left).localeCompare(String(right));
+                                        return comparison * direction || a.index - b.index;
+                                    }).map(item => item.row);
+                                }
+                                // Precompute run starts once per refresh/sort, not once per cell.
+                                readonly property var firstColumnRunStarts: {
+                                    const starts = [];
+                                    let start = 0;
+                                    for (let i = 0; i < sortedRows.length; ++i) {
+                                        const value = (sortedRows[i].cells || [])[0];
+                                        const previous = i > 0 ? (sortedRows[i - 1].cells || [])[0] : undefined;
+                                        if (i === 0 || value == null || value !== previous) start = i;
+                                        starts.push(start);
+                                    }
+                                    return starts;
+                                }
+                                property var customColumnWidths: ({})
+                                readonly property real minimumColumnWidth: 64
+                                function resizeColumn(name, width) {
+                                    const updated = Object.assign({}, customColumnWidths);
+                                    Object.defineProperty(updated, name, {
+                                        value: Math.max(minimumColumnWidth, width),
+                                        enumerable: true, configurable: true, writable: true
+                                    });
+                                    customColumnWidths = updated;
+                                }
+                                readonly property var widths: columns.map(name =>
+                                    Object.prototype.hasOwnProperty.call(customColumnWidths, name)
+                                        ? customColumnWidths[name]
+                                        : Math.max(180, Math.min(300, analysisCellMetrics.advanceWidth(name) + 28)))
+                                readonly property real tableWidth: widths.reduce((sum, width) => sum + width, 0)
+                                FontMetrics { id: analysisCellMetrics; font.family: "monospace" }
+                                Flickable {
+                                    id: analysisHeader
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 32
+                                    clip: true
+                                    interactive: false
+                                    contentWidth: analysisResultSection.tableWidth
+                                    contentX: analysisTable.contentX
+                                    Row {
+                                        Repeater {
+                                            model: analysisResultSection.columns
+                                            delegate: Rectangle {
+                                                id: analysisColumnHeader
+                                                required property int index
+                                                required property string modelData
+                                                objectName: "analysisHeader_" + index
+                                                width: analysisResultSection.widths[index]
+                                                height: 32
+                                                color: palette.button
+                                                border.color: palette.mid
+                                                Label {
+                                                    anchors.fill: parent
+                                                    anchors.margins: 8
+                                                    text: modelData + (analysisResultSection.sortColumn === modelData
+                                                        ? (analysisResultSection.sortDescending ? " ▼" : " ▲") : "")
+                                                    textFormat: Text.PlainText
+                                                    font.bold: true
+                                                    elide: Text.ElideRight
+                                                    verticalAlignment: Text.AlignVCenter
+                                                }
+                                                HoverHandler { id: headerHover }
+                                                MouseArea {
+                                                    anchors.fill: parent
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: analysisResultSection.sortBy(modelData)
+                                                }
+                                                MouseArea {
+                                                    objectName: "analysisColumnResize_" + analysisColumnHeader.index
+                                                    anchors.right: parent.right
+                                                    anchors.top: parent.top
+                                                    anchors.bottom: parent.bottom
+                                                    width: 16
+                                                    z: 1
+                                                    cursorShape: Qt.SizeHorCursor
+                                                    preventStealing: true
+                                                    property real pressX: 0
+                                                    property real startWidth: 0
+                                                    onPressed: mouse => {
+                                                        pressX = mapToItem(analysisHeader, mouse.x, mouse.y).x;
+                                                        startWidth = analysisColumnHeader.width;
+                                                    }
+                                                    onPositionChanged: mouse => {
+                                                        if (!pressed) return;
+                                                        const x = mapToItem(analysisHeader, mouse.x, mouse.y).x;
+                                                        analysisResultSection.resizeColumn(analysisColumnHeader.modelData,
+                                                            startWidth + x - pressX);
+                                                    }
+                                                }
+                                                ToolTip {
+                                                    id: headerTooltip
+                                                    visible: headerHover.hovered
+                                                    delay: 500
+                                                    text: modelData
+                                                    width: Math.min(600, implicitWidth)
+                                                    contentItem: Label { text: headerTooltip.text; textFormat: Text.PlainText; wrapMode: Text.WrapAnywhere }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                ScrollView {
+                                    id: analysisResults
+                                    clip: true
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    ScrollBar.vertical.policy: ScrollBar.AlwaysOn
+                                    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                                    ListView {
+                                        id: analysisTable
+                                        clip: true
+                                        contentWidth: Math.max(width, analysisResultSection.tableWidth)
+                                        onContentWidthChanged: Qt.callLater(() => {
+                                            contentX = Math.max(originX, Math.min(contentX,
+                                                originX + Math.max(0, contentWidth - width)));
+                                        })
+                                        flickableDirection: Flickable.HorizontalAndVerticalFlick
+                                        boundsBehavior: Flickable.StopAtBounds
+                                        readonly property var resultRows: analysisResultSection.sortedRows
+                                        property bool restoringPosition: false
+                                        property real savedX: 0
+                                        property real savedY: 0
+                                        function updateRows() {
+                                            if (!restoringPosition) {
+                                                savedX = contentX;
+                                                savedY = contentY;
+                                            }
+                                            restoringPosition = true;
+                                            model = resultRows;
+                                            Qt.callLater(() => {
+                                                forceLayout();
+                                                contentX = Math.max(originX, Math.min(savedX,
+                                                    originX + Math.max(0, contentWidth - width)));
+                                                contentY = Math.max(originY, Math.min(savedY,
+                                                    originY + Math.max(0, contentHeight - height)));
+                                                restoringPosition = false;
+                                            });
+                                        }
+                                        onResultRowsChanged: updateRows()
+                                        Component.onCompleted: updateRows()
+                                        delegate: Row {
+                                            id: analysisRow
+                                            required property int index
+                                            required property var modelData
+                                            height: 30
+                                            Repeater {
+                                                model: analysisResultSection.columns.length
+                                                delegate: Rectangle {
+                                                    id: analysisCell
+                                                    required property int index
+                                                    readonly property var value: (analysisRow.modelData.cells || [])[index]
+                                                    readonly property string fullText: String(value ?? "—")
+                                                    readonly property bool mergedFirstColumn: index === 0 && analysisMergeFirstToggle.checked
+                                                    readonly property int runStart: analysisResultSection.firstColumnRunStarts[analysisRow.index] ?? analysisRow.index
+                                                    readonly property bool continuation: mergedFirstColumn && runStart !== analysisRow.index
+                                                    readonly property bool runEnd: analysisRow.index + 1 >= analysisResultSection.sortedRows.length
+                                                        || analysisResultSection.firstColumnRunStarts[analysisRow.index + 1] !== runStart
+                                                    objectName: "analysisCell_" + analysisRow.index + "_" + index
+                                                    width: analysisResultSection.widths[index]
+                                                    height: 30
+                                                    color: (mergedFirstColumn ? runStart : (analysisRow ? analysisRow.index : 0)) % 2 ? palette.alternateBase : palette.base
+                                                    border.width: mergedFirstColumn ? 0 : 1
+                                                    border.color: palette.midlight
+                                                    Rectangle {
+                                                        width: 1; height: parent.height
+                                                        color: palette.midlight
+                                                        visible: analysisCell.mergedFirstColumn
+                                                    }
+                                                    Rectangle {
+                                                        anchors.right: parent.right
+                                                        width: 1; height: parent.height
+                                                        color: palette.midlight
+                                                        visible: analysisCell.mergedFirstColumn
+                                                    }
+                                                    Rectangle {
+                                                        objectName: "analysisCellTopBorder"
+                                                        width: parent.width; height: 1
+                                                        color: palette.midlight
+                                                        visible: analysisCell.mergedFirstColumn && !analysisCell.continuation
+                                                    }
+                                                    Rectangle {
+                                                        objectName: "analysisCellBottomBorder"
+                                                        anchors.bottom: parent.bottom
+                                                        width: parent.width; height: 1
+                                                        color: palette.midlight
+                                                        visible: analysisCell.mergedFirstColumn && analysisCell.runEnd
+                                                    }
+                                                    Label {
+                                                        id: cellLabel
+                                                        objectName: "analysisCellLabel"
+                                                        visible: !analysisCell.continuation
+                                                        anchors.fill: parent
+                                                        anchors.margins: 7
+                                                        text: typeof analysisCell.value === "number" && !Number.isInteger(analysisCell.value)
+                                                            ? analysisCell.value.toFixed(3) : analysisCell.fullText
+                                                        textFormat: Text.PlainText
+                                                        font.family: "monospace"
+                                                        elide: Text.ElideRight
+                                                        verticalAlignment: Text.AlignVCenter
+                                                        horizontalAlignment: typeof analysisCell.value === "number" ? Text.AlignRight : Text.AlignLeft
+                                                    }
+                                                    HoverHandler { id: cellHover }
+                                                    ToolTip {
+                                                        id: cellTooltip
+                                                        objectName: "analysisCellTooltip"
+                                                        visible: cellHover.hovered
+                                                        delay: 500
+                                                        text: analysisCell.fullText
+                                                        width: Math.min(600, implicitWidth)
+                                                        contentItem: Label { text: cellTooltip.text; textFormat: Text.PlainText; wrapMode: Text.WrapAnywhere }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                ScrollBar {
+                                    id: analysisHorizontalScroll
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: implicitHeight
+                                    orientation: Qt.Horizontal
+                                    visible: analysisTable.contentWidth > analysisTable.width
+                                    policy: ScrollBar.AlwaysOn
+                                    size: analysisTable.visibleArea.widthRatio
+                                    position: analysisTable.visibleArea.xPosition
+                                    onPositionChanged: {
+                                        if (pressed)
+                                            analysisTable.contentX = position * analysisTable.contentWidth;
+                                    }
+                                }
+                            }
+                            ScrollView {
+                                id: analysisTextResults
+                                visible: analysisTextToggle.checked
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                Layout.minimumHeight: 80
+                                Layout.preferredHeight: 180
+                                clip: true
+                                ScrollBar.vertical.policy: ScrollBar.AlwaysOn
+                                TextArea {
+                                    id: analysisResultText
+                                    readOnly: true
+                                    selectByMouse: true
+                                    font.family: "monospace"
+                                    wrapMode: TextEdit.NoWrap
+                                    textFormat: TextEdit.PlainText
+                                    property bool restoringPosition: false
+                                    property real savedX: 0
+                                    property real savedY: 0
+                                    readonly property string resultText: {
+                                        const r = analysisDialog.statistics;
+                                        const display = value => typeof value === "string" ? JSON.stringify(value) : String(value ?? "—");
+                                        return (r.columns || []).join("\t") + "\n"
+                                            + analysisResultSection.sortedRows.map(row => (row.cells || []).map(display).join("\t")).join("\n");
+                                    }
+                                    function updateResultText() {
+                                        if (text === resultText) return;
+                                        const view = analysisTextResults.contentItem;
+                                        if (!restoringPosition) {
+                                            savedX = view.contentX;
+                                            savedY = view.contentY;
+                                        }
+                                        restoringPosition = true;
+                                        text = resultText;
+                                        Qt.callLater(() => {
+                                            view.contentX = Math.max(view.originX, Math.min(savedX,
+                                                view.originX + Math.max(0, view.contentWidth - view.width)));
+                                            view.contentY = Math.max(view.originY, Math.min(savedY,
+                                                view.originY + Math.max(0, view.contentHeight - view.height)));
+                                            restoringPosition = false;
+                                        });
+                                    }
+                                    onResultTextChanged: updateResultText()
+                                    Component.onCompleted: updateResultText()
+                                }
+                            }
+                            ScrollView {
+                                id: analysisDiagnostics
+                                visible: !!analysisDialog.statistics.error || (analysisDialog.statistics.samples || []).length > 0
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 110
+                                clip: true
+                                TextArea {
+                                    id: analysisDiagnosticText
+                                    readOnly: true
+                                    selectByMouse: true
+                                    font.family: "monospace"
+                                    wrapMode: TextEdit.WrapAnywhere
+                                    textFormat: TextEdit.PlainText
+                                    text: analysisDialog.statistics.error || (root.tr("Diagnostic samples (up to 5; log text shortened)") + "\n"
+                                        + (analysisDialog.statistics.samples || []).map(s => "#" + s.line + " " + s.reason + "\n" + s.text).join("\n\n"))
+                                }
+                            }
+                        }
+                      }
+                        Dialog {
+                            id: analysisPresetDelete
+                            parent: Overlay.overlay
+                            anchors.centerIn: parent
+                            width: Math.min(420, root.width - 40)
+                            modal: true
+                            title: root.tr("Delete preset?")
+                            standardButtons: Dialog.Ok | Dialog.Cancel
+                            onOpened: root.translateButtons(analysisPresetDelete)
+                            onAccepted: analysisDialog.deletePreset()
+                            contentItem: Label { text: analysisDialog.selectedPreset ? analysisDialog.selectedPreset.name : ""; wrapMode: Text.WordWrap }
+                        }
+                    }
                     Menu {
                         id: selectionMenu
                         property string selectedText: ""
@@ -1895,6 +2731,21 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                             }
                             Label { text: page.encoding + " → UTF-8" }
+                            CheckBox {
+                                id: syslogBadgesToggle
+                                visible: page.source === "syslog-udp"
+                                text: root.tr("Syslog labels")
+                                checked: page.syslogBadges
+                                onToggled: {
+                                    logs.setProperty(page.index, "syslogBadges", checked);
+                                    backend.set_syslog_badges(checked);
+                                    root.scheduleSave();
+                                }
+                            }
+                            Button {
+                                text: root.tr("Analyze…")
+                                onClicked: analysisDialog.open()
+                            }
                             Button {
                                 id: follow
                                 text: root.tr("Auto-scroll")
@@ -2205,7 +3056,7 @@ ApplicationWindow {
                                 let anchorY = 0;
                                 let newAnchor = -1;
                                 const nextIds = backend.lineIds;
-                                const nextOffsets = lineOffsets(backend.text);
+                                const nextOffsets = lineOffsets(backend.displayText === undefined ? backend.text : backend.displayText);
                                 if (!follow.checked && !explicitChange && appliedLineIds.length > 0) {
                                     const offsets = lineOffsets(appliedPlainText);
                                     for (let i = 0; i < appliedLineIds.length; ++i) {
@@ -2220,7 +3071,7 @@ ApplicationWindow {
                                 updatingText = true;
                                 const serial = ++textUpdateSerial;
                                 appliedText = backend.highlightedText;
-                                appliedPlainText = backend.text;
+                                appliedPlainText = backend.displayText === undefined ? backend.text : backend.displayText;
                                 appliedLineIds = nextIds.slice();
                                 if (contextNavigation) {
                                     // A new TextArea discards both document and scene-graph
@@ -2512,7 +3363,7 @@ ApplicationWindow {
                                     textFormat: TextEdit.RichText
                                     wrapMode: TextEdit.NoWrap
                                     font.family: "monospace"
-                                    text: { const rules = page.trapRulesJson; return backend.highlight_result(resultRow.modelData.text); }
+                                    text: { const rules = page.trapRulesJson; const display = backend.displayText; return backend.highlight_result(resultRow.modelData.text); }
                                     clip: true
                                     TapHandler {
                                         acceptedButtons: Qt.RightButton
@@ -2532,6 +3383,94 @@ ApplicationWindow {
     }
 
     // Opt-in headless integration check: two tabs, Rust/QML data and polling.
+    Timer {
+        id: analysisTestTimer
+        interval: 100
+        repeat: true
+        property int ticks: 0
+        property int stage: 0
+        onTriggered: {
+            if (++ticks > 250) { console.error("TAILER_ANALYSIS_TIMEOUT"); Qt.exit(1); return; }
+            // qmllint disable missing-property
+            const page = pageRepeater.itemAt(0);
+            const other = pageRepeater.itemAt(1);
+            if (!page || !page.backend.text.includes("/ui/policies/")) return;
+            const b = page.backend;
+            if (stage === 0) {
+                if (analysisPresetRestoreTest) {
+                    if (!page.testRestoreAnalysisPreset() || !other.testRestoreOtherAnalysisPreset()) { console.error("TAILER_ANALYSIS_PRESET_RESTORE_FAILED"); Qt.exit(1); return; }
+                    console.log("TAILER_ANALYSIS_PRESET_RESTORE_OK"); Qt.quit(); return;
+                }
+                page.testAnalysisControls(); stage = 1; return;
+            }
+            if (b.analysisBusy) return;
+            const r = b.analysisResult;
+            if (stage === 1) {
+                if (r.error || r.matched !== 2 || r.unmatched !== 4 || r.rows[0].group !== "/ui/policies/"
+                    || r.rows[0].count !== 2 || other.backend.analysisResult.total !== undefined) {
+                    console.error("TAILER_ANALYSIS_INITIAL_FAILED", JSON.stringify(r)); Qt.exit(1); return;
+                }
+                const p = b.analysis_preset(false);
+                b.analyze(p.script, p.regex, "status", "", "count"); stage = 2; return;
+            }
+            if (stage === 2) {
+                if (r.rows.length !== 2 || r.matched !== 2) { console.error("TAILER_ANALYSIS_REGROUP_FAILED"); Qt.exit(1); return; }
+                b.analyze("invalid roto", "(.*)", "", "", "count"); stage = 3; return;
+            }
+            if (stage === 3) {
+                if (!r.error || r.error.includes("\u001b")) { console.error("TAILER_ANALYSIS_ERROR_FAILED"); Qt.exit(1); return; }
+                const p = b.analysis_preset(false);
+                b.analyze(p.script, p.regex, "path", "", "count"); stage = 4; return;
+            }
+            if (stage === 4 && r.total === 7) {
+                if (r.matched !== 3 || r.rows[0].count !== 3) { console.error("TAILER_ANALYSIS_LIVE_FAILED"); Qt.exit(1); return; }
+                page.testAnalysisInput(3, '"event"', [
+                    {name:"total", source:"/timing/total", type:"number"}
+                ], "total", 1);
+                stage = 5; return;
+            }
+            if (stage >= 5 && stage <= 7) {
+                const expected = [5.442, 2.5, 3.5][stage - 5];
+                if (r.error || r.matched !== 1 || r.skipped !== 6 || r.errors !== 0
+                    || r.rows[0].value !== expected || r.preview.length !== 5) {
+                    console.error("TAILER_ANALYSIS_INPUT_FAILED", stage, JSON.stringify(r)); Qt.exit(1); return;
+                }
+                if (stage === 5) {
+                    page.testAnalysisInput(1, "CSV:", [{name:"total", source:"2", type:"number"}], "total", 1);
+                    stage = 6; return;
+                }
+                if (stage === 6) {
+                    page.testAnalysisInput(2, "WS:", [{name:"total", source:"2", type:"number"}], "total", 1);
+                    stage = 7; return;
+                }
+                page.testAnalysisQuery("method, path, status, count()");
+                stage = 8; return;
+            }
+            if (stage === 8) {
+                if (r.error || r.matched !== 3 || r.rows.length !== 3
+                    || JSON.stringify(r.columns) !== JSON.stringify(["method", "path", "status", "count()"])
+                    || r.rows.some(row => row.cells.length !== 4 || row.cells[3] !== 1)) {
+                    console.error("TAILER_ANALYSIS_QUERY_FAILED", JSON.stringify(r)); Qt.exit(1); return;
+                }
+                page.testAnalysisQuery("avg()"); stage = 9; return;
+            }
+            if (stage === 9) {
+                if (!r.error || !r.error.includes("Query")) { console.error("TAILER_ANALYSIS_QUERY_ERROR_FAILED"); Qt.exit(1); return; }
+                page.testAnalysisQuery("path, count()"); stage = 10; return;
+            }
+            if (stage === 10) {
+                if (r.error || r.rows.length !== 1 || r.rows[0].cells[1] !== 3) {
+                    console.error("TAILER_ANALYSIS_QUERY_RECOVERY_FAILED", JSON.stringify(r)); Qt.exit(1); return;
+                }
+                if (!page.testSaveAnalysisPreset()) { console.error("TAILER_ANALYSIS_PRESET_SAVE_FAILED"); Qt.exit(1); return; }
+                if (!other.testSelectAnalysisPreset("builtin-apache")) { console.error("TAILER_ANALYSIS_TAB_PRESET_FAILED"); Qt.exit(1); return; }
+                root.saveWorkspace();
+                b.stop_analysis();
+                console.log("TAILER_ANALYSIS_OK"); Qt.quit();
+            }
+            // qmllint enable missing-property
+        }
+    }
     Component.onCompleted: {
         settings.appearance = workspace.state.appearance;
         root.applyAppearance();
@@ -2562,6 +3501,14 @@ ApplicationWindow {
             tabs.currentIndex = state.currentIndex;
         }
         restoring = false;
+        if (analysisTestPath !== "") {
+            if (!analysisPresetRestoreTest) {
+                root.addLog(analysisTestPath);
+                root.addLog(analysisTestPath);
+            }
+            tabs.currentIndex = 0;
+            analysisTestTimer.start();
+        }
         if (restoreTest)
             restoreTimer.start();
         if (connectionUiTest)
@@ -2576,6 +3523,14 @@ ApplicationWindow {
             localCommandTitle.text = "Local command test";
             localCommandInput.text = "printf 'local-out\\n'; printf 'local-error\\n' >&2";
             localCommandTimer.start();
+        }
+        if (syslogTestEndpoint !== "") {
+            if (logs.count === 0) {
+                syslogDialog.open();
+                syslogEndpoint.text = syslogTestEndpoint;
+                syslogDialog.accept();
+            }
+            syslogTestTimer.start();
         }
         if (bookmarkTestMode !== "") bookmarkTestTimer.start();
         if (tabUiTest) {
@@ -2861,6 +3816,84 @@ ApplicationWindow {
             if (workspace.error !== "" || root.profileUsed("bookmark-profile")) { console.error("TAILER_BOOKMARK_DELETE_FAILED"); Qt.exit(1); return; }
             console.log("TAILER_BOOKMARK_OPEN_DELETE_OK");
             Qt.quit();
+        }
+    }
+    Timer {
+        id: syslogTestTimer
+        interval: 100
+        repeat: true
+        property int attempts: 0
+        property int stage: 0
+        onTriggered: {
+            // qmllint disable missing-property
+            const page = pageRepeater.itemAt(0);
+            if (++attempts > 150 || !page || !page.backend.connected) {
+                console.error("TAILER_SYSLOG_FAILED", page ? page.backend.status : "missing page"); Qt.exit(1); return;
+            }
+            const b = page.backend;
+            if (stage === 0) {
+                if (!b.text.includes("%LINK-3-UPDOWN") || !b.text.includes("RPD_BGP")
+                    || !b.text.includes("bsd su:") || !b.text.includes("日本語")) return;
+                const raw = b.text;
+                page.testSyslogLabels(true);
+                if (b.text !== raw || !b.displayText.includes("[NOTI][LOC7]") || b.displayText.includes("<189>")) {
+                    console.error("TAILER_SYSLOG_LABELS_FAILED"); Qt.exit(1); return;
+                }
+                page.testSyslogLabels(false);
+                if (b.displayText !== raw) { console.error("TAILER_SYSLOG_LABELS_OFF_FAILED"); Qt.exit(1); return; }
+                page.testSyslogLabels(true);
+                b.analyze_input('fn parse(c: Captures) -> Record { Record.new().text("severity", syslog_severity(c.text("raw"))) }',
+                    "^(?P<raw>.*)$", "", "", "count", {format:"regex", fields:[], query:"severity, count()"});
+                stage = 1;
+            } else if (stage === 1) {
+                if (b.analysisBusy) return;
+                if (!page.logText || !page.logText.text.includes("[NOTI][LOC4]")) {
+                    console.error("TAILER_SYSLOG_RENDER_FAILED"); Qt.exit(1); return;
+                }
+                if (b.analysisResult.error || b.analysisResult.matched !== 4) {
+                    console.error("TAILER_SYSLOG_ANALYSIS_FAILED", JSON.stringify(b.analysisResult)); Qt.exit(1); return;
+                }
+                b.stop_analysis();
+                b.search("<189>", false, false);
+                stage = 2;
+            } else if (stage === 2) {
+                if (b.results.length !== 1) return;
+                b.set_filter("[NOTI][LOC7]", false, false, false);
+                stage = 10;
+            } else if (stage === 10) {
+                if (!b.summary.includes("Filter matched 1 lines")) return;
+                if (!b.text.includes("%LINK-3-UPDOWN") || !b.displayText.startsWith("[NOTI][LOC7]")) {
+                    console.error("TAILER_SYSLOG_LABEL_FILTER_FAILED"); Qt.exit(1); return;
+                }
+                page.testSyslogLabels(false);
+                stage = 11;
+            } else if (stage === 11) {
+                if (!b.summary.includes("Filter matched 0 lines")) return;
+                if (b.text !== "") { console.error("TAILER_SYSLOG_RAW_FILTER_FAILED"); Qt.exit(1); return; }
+                b.set_filter("<189>", false, false, false);
+                stage = 12;
+            } else if (stage === 12) {
+                if (!b.summary.includes("Filter matched 1 lines")) return;
+                if (!b.text.startsWith("<189>")) { console.error("TAILER_SYSLOG_PRI_FILTER_FAILED"); Qt.exit(1); return; }
+                b.set_filter("", false, false, false);
+                page.testSyslogLabels(true);
+                editTabDialog.edit(0);
+                if (editSource.currentIndex !== 3 || editLogPath.text !== root.syslogTestEndpoint) {
+                    console.error("TAILER_SYSLOG_EDIT_FAILED"); Qt.exit(1); return;
+                }
+                editTabDialog.accept();
+                stage = 3;
+            } else {
+                root.saveWorkspace();
+                if (workspace.state.tabs[0].source !== "syslog-udp" || workspace.state.tabs[0].logPath !== root.syslogTestEndpoint
+                    || !workspace.state.tabs[0].syslogBadges) {
+                    console.error("TAILER_SYSLOG_SAVE_FAILED"); Qt.exit(1); return;
+                }
+                stop();
+                b.stop();
+                console.log("TAILER_SYSLOG_OK"); Qt.quit();
+            }
+            // qmllint enable missing-property
         }
     }
     Timer {

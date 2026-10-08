@@ -1,6 +1,6 @@
 [package]
 name = "tailer"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 license = "MIT"
 
@@ -10,5 +10,8 @@ serde_json = "1"
 keyring = "4.2"
 encoding_rs = "0.8"
 regex = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+#roto = { git = "https://codeberg.org/NLnetLabs/roto", rev = "0b2d02dbf9d2df46249f71aeeb5decaf06c109fc", features = ["selinux-fix"] }
+roto = { version = "0.12", features = ["selinux-fix"] }
 russh = "0.63"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros"] }

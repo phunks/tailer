@@ -318,6 +318,10 @@ pub fn highlight(text: &str, needle: &str, ignore_case: bool) -> String {
 }
 
 pub fn highlight_rules(text: &str, rules: &[CompiledRule]) -> String {
+    highlight_syslog(text, rules, false)
+}
+
+pub fn highlight_syslog(text: &str, rules: &[CompiledRule], badges: bool) -> String {
     // Qt Quick can carry a translucent character background over a literal
     // newline in <pre>, painting the following row twice. Explicit line breaks
     // preserve the same plain text and line metrics without that format bleed.
@@ -357,13 +361,58 @@ pub fn highlight_rules(text: &str, rules: &[CompiledRule]) -> String {
         spans.sort_by_key(|(range, _)| range.start);
     }
     spans.sort_by_key(|(range, _)| range.start);
+    let mut decorations = Vec::new();
+    if badges {
+        let mut offset = 0;
+        for line in text.split_inclusive('\n') {
+            if let Some((start, length, value)) = crate::syslog::decoration(line) {
+                decorations.push((offset + start..offset + start + length, value));
+            }
+            offset += line.len();
+        }
+    }
     let mut output = String::from("<pre>");
     let mut previous = 0;
+    // Decoration takes precedence only over the PRI; body matches retain raw offsets.
+    let mut rendered = Vec::new();
     for (range, rule) in spans {
+        let mut start = range.start;
+        let first = decorations.partition_point(|(hidden, _)| hidden.end <= start);
+        for (hidden, _) in &decorations[first..] {
+            if hidden.start >= range.end {
+                break;
+            }
+            if hidden.end <= start || hidden.start >= range.end {
+                continue;
+            }
+            if start < hidden.start {
+                rendered.push((start..hidden.start, Some(rule), None));
+            }
+            start = start.max(hidden.end);
+        }
+        if start < range.end {
+            rendered.push((start..range.end, Some(rule), None));
+        }
+    }
+    for (range, value) in decorations {
+        rendered.push((range, None, Some(value)));
+    }
+    rendered.sort_by_key(|(range, _, _)| range.start);
+    for (range, rule, badge) in rendered {
         if range.start < previous {
             continue;
         }
         output.push_str(&escaped(&text[previous..range.start]));
+        if let Some(value) = badge {
+            output.push_str(&format!(
+                "<span style=\"color:{};font-weight:bold\">{}</span>",
+                crate::syslog::color(value),
+                escaped(&crate::syslog::badge(value))
+            ));
+            previous = range.end;
+            continue;
+        }
+        let rule = rule.unwrap();
         if rule.background {
             let alpha = (rule.opacity * 255 + 50) / 100;
             output.push_str(&format!(
@@ -401,6 +450,22 @@ pub fn context_position(text: &str, selected: Option<usize>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn syslog_badges_keep_raw_trap_offsets_and_escape_body() {
+        let rules =
+            compile_rules(&json!([{"text":"<190>.*", "regex":true, "color":"#ef5350"}])).unwrap();
+        let raw = "<190>hello <script>&\n42: <0>panic\n<192>unchanged\n";
+        let html = highlight_syslog(raw, &rules, true);
+        assert!(html.contains("[INFO][LOC7]"));
+        assert!(html.contains("[EMRG][KERN]"));
+        assert!(html.contains("hello &lt;script&gt;&amp;"));
+        assert!(!html.contains("&lt;190&gt;"));
+        assert!(html.contains("&lt;192&gt;unchanged"));
+        assert_eq!(
+            highlight_syslog(raw, &rules, false),
+            highlight_rules(raw, &rules)
+        );
+    }
     #[test]
     fn disabled_rules_preserve_conditions_without_detection_or_highlighting() {
         let mut value = json!([{"text":"ERROR.*", "regex":true, "enabled":false}]);
