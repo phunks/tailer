@@ -112,7 +112,7 @@ ApplicationWindow {
                 const group = bookmarkGroups.get(i);
                 if (group.parentId !== parentId) continue;
                 bookmarkTree.append({isGroup:true, nodeId:group.id, sourceIndex:i, depth:depth,
-                    bookmarkTitle:group.name, logPath:"", remote:false, connectionId:"", expanded:group.expanded});
+                    bookmarkTitle:group.name, logPath:"", source:"", remote:false, connectionId:"", expanded:group.expanded});
                 if (group.expanded) appendChildren(group.id, depth + 1);
             }
             if (parentId !== "") appendBookmarks(parentId, depth);
@@ -122,13 +122,13 @@ ApplicationWindow {
                 const row = bookmarks.get(i);
                 if ((row.groupId || "") !== groupId) continue;
                 bookmarkTree.append({isGroup:false, nodeId:"", sourceIndex:i, depth:depth,
-                    bookmarkTitle:row.bookmarkTitle, logPath:row.logPath, remote:row.remote,
+                    bookmarkTitle:row.bookmarkTitle, logPath:row.logPath, source:row.source || "file", remote:row.remote,
                     connectionId:row.connectionId, expanded:false});
             }
         }
         appendChildren("", 0);
         bookmarkTree.append({isGroup:true, nodeId:"", sourceIndex:-1, depth:0,
-            bookmarkTitle:root.tr("Unclassified"), logPath:"", remote:false, connectionId:"", expanded:unclassifiedExpanded});
+            bookmarkTitle:root.tr("Unclassified"), logPath:"", source:"", remote:false, connectionId:"", expanded:unclassifiedExpanded});
         if (unclassifiedExpanded) appendBookmarks("", 1);
     }
     function toggleBookmarkGroup(id) {
@@ -237,7 +237,7 @@ ApplicationWindow {
             searchRegex: row.searchRegex,
             searchCase: row.searchCase,
             follow: row.follow,
-            analysisPresetId: row.analysisPresetId || "builtin-access",
+            analysisPresetId: row.analysisPresetId || "builtin-apache",
             analysisMergeFirstColumn: row.analysisMergeFirstColumn === true,
             syslogBadges: row.syslogBadges === true,
             trapRulesJson: row.trapRulesJson
@@ -331,7 +331,7 @@ ApplicationWindow {
             searchRegex: false,
             searchCase: false,
             follow: true,
-            analysisPresetId: "builtin-access",
+            analysisPresetId: "builtin-apache",
             analysisMergeFirstColumn: false,
             syslogBadges: false
         });
@@ -610,6 +610,7 @@ ApplicationWindow {
                     required property int index
                     required property string bookmarkTitle
                     required property string logPath
+                    required property string source
                     required property bool remote
                     required property string connectionId
                     required property bool isGroup
@@ -618,6 +619,8 @@ ApplicationWindow {
                     required property int depth
                     required property bool expanded
                     property alias contextMenu: bookmarkMenu
+                    readonly property string connectionName: remote ? (root.profileById(connectionId).name || "") : ""
+                    readonly property string sourcePath: isGroup ? "" : (source || "file") + ":" + logPath
                     function selectBookmark(button) {
                         bookmarkList.currentIndex = index;
                         if (button === Qt.RightButton) bookmarkMenu.popup();
@@ -630,19 +633,55 @@ ApplicationWindow {
                     }
                     width: bookmarkList.width
                     highlighted: bookmarkList.currentIndex === index
-                    contentItem: ColumnLayout {
+                    contentItem: RowLayout {
+                        spacing: 12
                         Label {
+                            objectName: "bookmarkTitleLabel"
                             text: (bookmarkItem.isGroup ? "▣ " : "") + bookmarkItem.bookmarkTitle
+                            textFormat: Text.PlainText
                             font.bold: true
                             elide: Text.ElideRight
-                            Layout.fillWidth: true
+                            wrapMode: Text.NoWrap
+                            maximumLineCount: 1
+                            Layout.minimumWidth: 0
+                            Layout.preferredWidth: Math.max(0, bookmarkList.width * 0.34 - bookmarkItem.leftPadding)
+                            Layout.maximumWidth: bookmarkItem.isGroup ? Infinity : Layout.preferredWidth
+                            Layout.fillWidth: bookmarkItem.isGroup
                         }
                         Label {
+                            objectName: "bookmarkConnectionLabel"
                             visible: !bookmarkItem.isGroup
-                            text: (bookmarkItem.remote ? root.profileById(bookmarkItem.connectionId).name + " · " : "") + bookmarkItem.logPath
+                            text: bookmarkItem.connectionName
+                            textFormat: Text.PlainText
                             elide: Text.ElideRight
+                            wrapMode: Text.NoWrap
+                            maximumLineCount: 1
+                            Layout.minimumWidth: 0
+                            Layout.preferredWidth: bookmarkList.width * 0.22
+                            Layout.maximumWidth: Layout.preferredWidth
+                        }
+                        Label {
+                            objectName: "bookmarkPathLabel"
+                            visible: !bookmarkItem.isGroup
+                            text: bookmarkItem.sourcePath
+                            textFormat: Text.PlainText
+                            elide: Text.ElideRight
+                            wrapMode: Text.NoWrap
+                            maximumLineCount: 1
+                            Layout.minimumWidth: 0
                             Layout.fillWidth: true
                         }
+                    }
+                    HoverHandler { id: bookmarkHover }
+                    ToolTip {
+                        id: bookmarkTooltip
+                        objectName: "bookmarkRowTooltip"
+                        visible: bookmarkHover.hovered
+                        delay: 500
+                        text: bookmarkItem.bookmarkTitle + (bookmarkItem.isGroup ? "" : "\n"
+                            + (bookmarkItem.connectionName ? bookmarkItem.connectionName + "\n" : "") + bookmarkItem.sourcePath)
+                        width: Math.min(600, implicitWidth)
+                        contentItem: Label { text: bookmarkTooltip.text; textFormat: Text.PlainText; wrapMode: Text.WrapAnywhere }
                     }
                     MouseArea {
                         objectName: "bookmarkRowMouse"
@@ -1113,7 +1152,7 @@ ApplicationWindow {
                 searchRegex: false,
                 searchCase: false,
                 follow: true,
-                analysisPresetId: "builtin-access",
+                analysisPresetId: "builtin-apache",
                 analysisMergeFirstColumn: false,
                 syslogBadges: false
             });
@@ -1750,8 +1789,15 @@ ApplicationWindow {
                     Component.onDestruction: backend.stop()
                     function testAnalysisControls() {
                         analysisDialog.open();
-                        analysisDialog.loadPreset(false);
+                        testLoadAccessAnalysisSettings();
                         analysisDialog.apply();
+                    }
+                    function testLoadAccessAnalysisSettings() {
+                        analysisDialog.loadSavedPreset("builtin-apache");
+                        const s = backend.analysis_preset(false);
+                        analysisRegex.text = s.regex;
+                        analysisScript.text = s.script;
+                        analysisQuery.text = "path, count()";
                     }
                     function testAnalysisInput(format, filter, fields, metric, operation) {
                         analysisFormat.currentIndex = format;
@@ -1766,7 +1812,7 @@ ApplicationWindow {
                         analysisDialog.apply();
                     }
                     function testAnalysisQuery(text) {
-                        analysisDialog.loadPreset(false);
+                        testLoadAccessAnalysisSettings();
                         analysisFilter.text = '"';
                         analysisQuery.text = text;
                         analysisDialog.apply();
@@ -1779,7 +1825,7 @@ ApplicationWindow {
                         const id = analysisDialog.selectedPresetId;
                         analysisQuery.text = "method, path, count()";
                         if (!analysisDialog.savePreset(true)) return false;
-                        analysisDialog.loadPreset(true);
+                        analysisDialog.loadSavedPreset("builtin-apache");
                         if (analysisMergeFirstToggle.checked) return false;
                         analysisDialog.loadSavedPreset(id);
                         if (!analysisMergeFirstToggle.checked || !page.analysisMergeFirstColumn) return false;
@@ -1800,7 +1846,8 @@ ApplicationWindow {
                     }
                     function testRestoreAnalysisPreset() {
                         const preset = workspace.analysisPresets.find(p => p.name === "Integration preset");
-                        if (!preset || workspace.analysisPresets.length !== 4) return false;
+                        if (!preset || workspace.analysisPresets.length !== 3) return false;
+                        if (workspace.analysisPresets.some(p => p.id === "builtin-access")) return false;
                         if (preset.settings.mergeFirstColumn !== true || page.analysisMergeFirstColumn) return false;
                         if (page.analysisPresetId !== preset.id) return false;
                         analysisDialog.open();
@@ -1812,9 +1859,9 @@ ApplicationWindow {
                         if (page.analysisPresetId !== "builtin-apache") return false;
                         analysisDialog.open();
                         if (analysisDialog.selectedPresetId !== "builtin-apache") return false;
-                        analysisDialog.loadSavedPreset("deleted-preset");
-                        return analysisDialog.selectedPresetId === "builtin-access"
-                            && logs.get(page.index).analysisPresetId === "builtin-access";
+                        analysisDialog.loadSavedPreset("builtin-access");
+                        return analysisDialog.selectedPresetId === "builtin-apache"
+                            && logs.get(page.index).analysisPresetId === "builtin-apache";
                     }
                     Dialog {
                         id: analysisDialog
@@ -1902,7 +1949,7 @@ ApplicationWindow {
                         }
                         property bool initialized: false
                         property string settingsError: ""
-                        property string selectedPresetId: "builtin-access"
+                        property string selectedPresetId: "builtin-apache"
                         function rememberPreset() {
                             logs.setProperty(page.index, "analysisPresetId", selectedPresetId);
                             root.scheduleSave();
@@ -1911,16 +1958,13 @@ ApplicationWindow {
                         readonly property var presetRows: workspace.analysisPresets
                         readonly property var selectedPreset: presetRows.find(p => p.id === selectedPresetId)
                         readonly property var statistics: backend.analysisResult
-                        function loadPreset(apache) {
-                            loadSavedPreset(apache ? "builtin-apache" : "builtin-access");
-                        }
                         function rememberMergeFirstColumn() {
                             logs.setProperty(page.index, "analysisMergeFirstColumn", analysisMergeFirstToggle.checked);
                             root.scheduleSave();
                         }
                         function loadSavedPreset(id) {
                             const preset = presetRows.find(p => p.id === id)
-                                || presetRows.find(p => p.id === "builtin-access");
+                                || presetRows.find(p => p.id === "builtin-apache");
                             if (!preset) return;
                             const s = preset.settings;
                             selectedPresetId = preset.id;
@@ -1983,7 +2027,7 @@ ApplicationWindow {
                         function deletePreset() {
                             const result = workspace.delete_analysis_preset(selectedPresetId);
                             if (result.error) { settingsError = result.error; return; }
-                            loadSavedPreset("builtin-access");
+                            loadSavedPreset("builtin-apache");
                         }
                         onOpened: {
                             root.translateButtons(analysisDialog);
@@ -1994,7 +2038,7 @@ ApplicationWindow {
                                 rememberMergeFirstColumn();
                                 initialized = true;
                             }
-                            else if (!selectedPreset) loadPreset(false);
+                            else if (!selectedPreset) loadSavedPreset("builtin-apache");
                         }
                         onRejected: close()
                         contentItem: ScrollView {
@@ -2769,9 +2813,9 @@ ApplicationWindow {
                                     page.saveView();
                                     if (checked) {
                                         scroll.displayFrozen = false;
-                                        if (logText) logText.deselect();
+                                        if (page.logText) page.logText.deselect();
                                         Qt.callLater(scroll.updateLogText);
-                                        Qt.callLater(() => { if (logText) logText.followEnd(); });
+                                        Qt.callLater(() => { if (page.viewActive && page.logText) page.logText.followEnd(); });
                                     }
                                 }
                             }
@@ -3670,6 +3714,8 @@ ApplicationWindow {
         id: bookmarkTestTimer
         interval: 750
         property int stage: 0
+        property int outputIndex: 0
+        property int outputAttempts: 0
         onTriggered: {
             if (root.bookmarkTestMode === "groups-save") {
                 root.editBookmarkGroup("", true);
@@ -3719,15 +3765,30 @@ ApplicationWindow {
                     root.openBookmarkGroup(parentId);
                     bookmarkGroupConfirm.accept();
                     if (logs.count !== 2 || bookmarksDialog.visible) { console.error("TAILER_GROUP_OPEN_FAILED"); Qt.exit(1); return; }
+                    tabs.currentIndex = outputIndex;
                     stage++;
                     restart();
                     return;
                 }
                 // qmllint disable missing-property
-                for (let i = 0; i < 2; ++i) {
-                    if (pageRepeater.itemAt(i).backend.text !== "group-" + i + "\n") {
-                        console.error("TAILER_GROUP_OUTPUT_FAILED"); Qt.exit(1); return;
+                // Inactive tabs collect/archive output without refreshing display text.
+                // Select each tab and allow its asynchronous view to catch up.
+                const outputPage = pageRepeater.itemAt(outputIndex);
+                if (!outputPage || outputPage.backend.text !== "group-" + outputIndex + "\n") {
+                    if (++outputAttempts >= 10) {
+                        console.error("TAILER_GROUP_OUTPUT_FAILED", outputIndex,
+                            outputPage ? outputPage.backend.status : "Page missing",
+                            outputPage ? outputPage.backend.text : "");
+                        Qt.exit(1); return;
                     }
+                    restart();
+                    return;
+                }
+                if (++outputIndex < 2) {
+                    outputAttempts = 0;
+                    tabs.currentIndex = outputIndex;
+                    restart();
+                    return;
                 }
                 // qmllint enable missing-property
                 while (logs.count) root.closeTab(0);
@@ -3836,7 +3897,7 @@ ApplicationWindow {
                     || !b.text.includes("bsd su:") || !b.text.includes("日本語")) return;
                 const raw = b.text;
                 page.testSyslogLabels(true);
-                if (b.text !== raw || !b.displayText.includes("[NOTI][LOC7]") || b.displayText.includes("<189>")) {
+                if (b.text !== raw || !b.displayText.includes("[NOTI|LOC7]") || b.displayText.includes("<189>")) {
                     console.error("TAILER_SYSLOG_LABELS_FAILED"); Qt.exit(1); return;
                 }
                 page.testSyslogLabels(false);
@@ -3847,22 +3908,26 @@ ApplicationWindow {
                 stage = 1;
             } else if (stage === 1) {
                 if (b.analysisBusy) return;
-                if (!page.logText || !page.logText.text.includes("[NOTI][LOC4]")) {
+                if (!page.logText || !page.logText.text.includes("[NOTI|LOC4]")) {
                     console.error("TAILER_SYSLOG_RENDER_FAILED"); Qt.exit(1); return;
                 }
                 if (b.analysisResult.error || b.analysisResult.matched !== 4) {
                     console.error("TAILER_SYSLOG_ANALYSIS_FAILED", JSON.stringify(b.analysisResult)); Qt.exit(1); return;
                 }
                 b.stop_analysis();
-                b.search("<189>", false, false);
+                b.set_trap_rules([{text:"[NOTI|LOC7]", color:"#abcdef"}]);
+                if (!b.highlightedText.includes('color:#abcdef;font-weight:bold">[NOTI|LOC7]')) {
+                    console.error("TAILER_SYSLOG_TRAP_LABEL_FAILED"); Qt.exit(1); return;
+                }
+                b.search("[NOTI|LOC7]", false, false);
                 stage = 2;
             } else if (stage === 2) {
                 if (b.results.length !== 1) return;
-                b.set_filter("[NOTI][LOC7]", false, false, false);
+                b.set_filter("[NOTI|LOC7]", false, false, false);
                 stage = 10;
             } else if (stage === 10) {
                 if (!b.summary.includes("Filter matched 1 lines")) return;
-                if (!b.text.includes("%LINK-3-UPDOWN") || !b.displayText.startsWith("[NOTI][LOC7]")) {
+                if (!b.text.includes("%LINK-3-UPDOWN") || !b.displayText.startsWith("[NOTI|LOC7]")) {
                     console.error("TAILER_SYSLOG_LABEL_FILTER_FAILED"); Qt.exit(1); return;
                 }
                 page.testSyslogLabels(false);
@@ -3870,10 +3935,13 @@ ApplicationWindow {
             } else if (stage === 11) {
                 if (!b.summary.includes("Filter matched 0 lines")) return;
                 if (b.text !== "") { console.error("TAILER_SYSLOG_RAW_FILTER_FAILED"); Qt.exit(1); return; }
+                if (b.results.length !== 0) return;
+                b.search("<189>", false, false);
                 b.set_filter("<189>", false, false, false);
                 stage = 12;
             } else if (stage === 12) {
                 if (!b.summary.includes("Filter matched 1 lines")) return;
+                if (b.results.length !== 1) return;
                 if (!b.text.startsWith("<189>")) { console.error("TAILER_SYSLOG_PRI_FILTER_FAILED"); Qt.exit(1); return; }
                 b.set_filter("", false, false, false);
                 page.testSyslogLabels(true);

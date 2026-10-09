@@ -37,6 +37,7 @@ with tempfile.TemporaryDirectory(prefix="tailer-bookmarks-") as directory:
         print(result.stdout, end="")
         print(result.stderr, end="", file=sys.stderr)
         result.check_returncode()
+        assert "ReferenceError" not in result.stdout + result.stderr
         marker = "TAILER_BOOKMARK_SAVE_OK" if mode == "save" else "TAILER_BOOKMARK_OPEN_DELETE_OK"
         assert marker in result.stdout + result.stderr
         state = json.loads(state_path.read_text())
@@ -51,6 +52,7 @@ with tempfile.TemporaryDirectory(prefix="tailer-bookmarks-") as directory:
         print(result.stdout, end="")
         print(result.stderr, end="", file=sys.stderr)
         result.check_returncode()
+        assert "ReferenceError" not in result.stdout + result.stderr
         assert marker in result.stdout + result.stderr
         state = json.loads(state_path.read_text())
         assert state["tabs"] == []

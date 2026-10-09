@@ -327,6 +327,10 @@ impl LogBackend {
         }
         self.syslog_badges = enabled;
         self.query.filter.syslog_labels = enabled;
+        self.query.search.syslog_labels = enabled;
+        if let Some(session) = &self.session {
+            session.set_syslog_labels(enabled);
+        }
         self.display_text = if enabled {
             syslog::display_text(&self.text)
         } else {
@@ -482,6 +486,7 @@ impl LogBackend {
             Ok(session) => {
                 session.set_view_active(self.view_active);
                 session.set_trap_rules(self.trap_rules.clone());
+                session.set_syslog_labels(self.syslog_badges);
                 self.query.generation = session.query(self.query.clone());
                 self.archive_path = session.path.display().to_string();
                 self.status = session.status();
@@ -656,6 +661,7 @@ impl LogBackend {
     #[qslot]
     fn search(&mut self, text: String, regex: bool, ignore_case: bool) {
         self.query.search = session::pattern(text, regex, ignore_case, false);
+        self.query.search.syslog_labels = self.syslog_badges;
         self.query.context = None;
         self.submit();
     }

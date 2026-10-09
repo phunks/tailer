@@ -22,7 +22,8 @@ Item {
     property int editedIndex: -1
     property int deletedIndex: -1
     function tr(key) { return key; }
-    function profileById(id) { return {name: "Production"}; }
+    property string connectionName: "Production"
+    function profileById(id) { return {name: root.connectionName}; }
     function openBookmark(index) { openedIndex = index; bookmarksDialog.close(); }
     function editBookmark(index) { editedIndex = index; }
     function deleteBookmark(index) { deletedIndex = index; bookmarks.remove(index); }
@@ -34,9 +35,9 @@ Item {
     ListModel { id: bookmarkGroups }
     ListModel {
         id: bookmarkTree
-        ListElement { isGroup: true; nodeId: "prod"; sourceIndex: 0; depth: 0; expanded: true; bookmarkTitle: "Production"; logPath: ""; remote: false; connectionId: "" }
-        ListElement { isGroup: false; nodeId: ""; sourceIndex: 0; depth: 1; expanded: false; bookmarkTitle: "First log"; logPath: "/tmp/first"; remote: false; connectionId: "" }
-        ListElement { isGroup: false; nodeId: ""; sourceIndex: 1; depth: 1; expanded: false; bookmarkTitle: "Second log"; logPath: "/tmp/second"; remote: true; connectionId: "prod" }
+        ListElement { isGroup: true; nodeId: "prod"; sourceIndex: 0; depth: 0; expanded: true; bookmarkTitle: "Production"; logPath: ""; source: ""; remote: false; connectionId: "" }
+        ListElement { isGroup: false; nodeId: ""; sourceIndex: 0; depth: 1; expanded: false; bookmarkTitle: "First log"; logPath: "/tmp/first"; source: "file"; remote: false; connectionId: "" }
+        ListElement { isGroup: false; nodeId: ""; sourceIndex: 1; depth: 1; expanded: false; bookmarkTitle: "Second log"; logPath: "/tmp/second"; source: "file"; remote: true; connectionId: "prod" }
     }
     ListModel {
         id: bookmarks
@@ -57,6 +58,84 @@ Item {
     TestCase {
         name: "BookmarkListMouse"
         when: windowShown
+        function test_single_line_columns_and_tooltip() {
+            bookmarksDialog.open();
+            tryCompare(bookmarksDialog, "opened", true);
+            tryVerify(() => bookmarkList.itemAtIndex(2) !== null);
+            const first = bookmarkList.itemAtIndex(1);
+            const second = bookmarkList.itemAtIndex(2);
+            const title = findChild(second, "bookmarkTitleLabel");
+            const connection = findChild(second, "bookmarkConnectionLabel");
+            const path = findChild(second, "bookmarkPathLabel");
+            compare(connection.text, "Production");
+            compare(findChild(first, "bookmarkConnectionLabel").text, "");
+            const originalHeight = second.height;
+            const longTitle = "<b>Very long bookmark name</b> ".repeat(20);
+            const longPath = "/var/log/" + "very-long-directory/".repeat(30) + "application.log";
+            const longConnection = "Production SSH connection ".repeat(20);
+            try {
+                root.connectionName = longConnection;
+                bookmarkTree.setProperty(2, "bookmarkTitle", longTitle);
+                bookmarkTree.setProperty(2, "logPath", longPath);
+                bookmarkTree.setProperty(2, "depth", 2);
+                tryCompare(title, "text", longTitle);
+                tryCompare(connection, "text", longConnection);
+                tryCompare(path, "text", "file:" + longPath);
+                tryVerify(() => title.truncated && connection.truncated && path.truncated);
+                compare(second.height, originalHeight);
+                compare(title.maximumLineCount, 1);
+                compare(title.textFormat, Text.PlainText);
+                compare(title.y, connection.y);
+                compare(connection.y, path.y);
+                const firstConnection = findChild(first, "bookmarkConnectionLabel");
+                const firstPath = findChild(first, "bookmarkPathLabel");
+                tryVerify(() => Math.round(connection.mapToItem(bookmarkList, 0, 0).x)
+                    === Math.round(firstConnection.mapToItem(bookmarkList, 0, 0).x));
+                tryVerify(() => Math.round(path.mapToItem(bookmarkList, 0, 0).x)
+                    === Math.round(firstPath.mapToItem(bookmarkList, 0, 0).x));
+                mouseMove(second, second.width / 2, second.height / 2);
+                const tooltip = findChild(second, "bookmarkRowTooltip");
+                tryCompare(tooltip, "visible", true);
+                compare(tooltip.text, longTitle + "\\n" + longConnection + "\\nfile:" + longPath);
+                compare(tooltip.contentItem.textFormat, Text.PlainText);
+                verify(tooltip.width <= 600);
+            } finally {
+                root.connectionName = "Production";
+                bookmarkTree.setProperty(2, "bookmarkTitle", "Second log");
+                bookmarkTree.setProperty(2, "logPath", "/tmp/second");
+                bookmarkTree.setProperty(2, "depth", 1);
+                mouseMove(root, 0, 0);
+                bookmarksDialog.close();
+                tryCompare(bookmarksDialog, "visible", false);
+            }
+        }
+        function test_source_prefix() {
+            bookmarksDialog.open();
+            tryCompare(bookmarksDialog, "opened", true);
+            tryVerify(() => bookmarkList.itemAtIndex(2) !== null);
+            const row = bookmarkList.itemAtIndex(2);
+            const path = findChild(row, "bookmarkPathLabel");
+            try {
+                for (const entry of [
+                    ["docker", "litellm-db", "docker:litellm-db"],
+                    ["file", "/var/log/app.log", "file:/var/log/app.log"],
+                    ["custom", "printf 'hello'", "custom:printf 'hello'"],
+                    ["syslog-udp", "127.0.0.1:1514", "syslog-udp:127.0.0.1:1514"],
+                    ["", "/tmp/legacy.log", "file:/tmp/legacy.log"]
+                ]) {
+                    bookmarkTree.setProperty(2, "source", entry[0]);
+                    bookmarkTree.setProperty(2, "logPath", entry[1]);
+                    tryCompare(path, "text", entry[2]);
+                    compare(findChild(row, "bookmarkRowTooltip").text,
+                            "Second log\\nProduction\\n" + entry[2]);
+                }
+            } finally {
+                bookmarkTree.setProperty(2, "source", "file");
+                bookmarkTree.setProperty(2, "logPath", "/tmp/second");
+                bookmarksDialog.close();
+                tryCompare(bookmarksDialog, "visible", false);
+            }
+        }
         function test_mouse_actions() {
             bookmarksDialog.open();
             tryCompare(bookmarksDialog, "opened", true);

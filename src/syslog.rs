@@ -40,7 +40,7 @@ pub fn facility_name(value: u32) -> &'static str {
 }
 pub fn badge(value: usize) -> String {
     format!(
-        "[{}][{}] ",
+        "[{}|{}] ",
         SEVERITY_LABELS[value % 8].to_ascii_uppercase(),
         FACILITY_LABELS[value / 8].to_ascii_uppercase()
     )
@@ -48,9 +48,9 @@ pub fn badge(value: usize) -> String {
 pub fn color(value: usize) -> &'static str {
     // Muted color families keep labels readable without overpowering the body.
     match value % 8 {
-        0..=3 => "#c07876",
-        4 => "#b19749",
-        5..=6 => "#718fa8",
+        0..=3 => "#B15956",
+        4 => "#B1B146",
+        5..=6 => "#3580A1",
         _ => "#888888",
     }
 }
@@ -99,7 +99,7 @@ mod tests {
                 pri(&format!("<{value}>body")),
                 Some((value, value.to_string().len() + 2))
             );
-            assert_eq!(badge(value).len(), 13);
+            assert_eq!(badge(value).len(), 12);
             assert!(badge(value).is_ascii());
         }
         for invalid in ["<192>x", "<-1>x", "<9999>x", "<>x", "<a>x", "<12", " x<12>"] {
@@ -107,7 +107,7 @@ mod tests {
         }
         assert_eq!(
             display_text("<190>hello\n42: <0>world\n<192>bad\n"),
-            "[INFO][LOC7] hello\n42: [EMRG][KERN] world\n<192>bad\n"
+            "[INFO|LOC7] hello\n42: [EMRG|KERN] world\n<192>bad\n"
         );
     }
 }

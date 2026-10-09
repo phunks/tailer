@@ -792,6 +792,9 @@ impl Session {
     pub fn trap_hits(&self) -> u64 {
         self.shared.trap.lock().unwrap().hits
     }
+    pub fn set_syslog_labels(&self, enabled: bool) {
+        self.shared.trap.lock().unwrap().set_syslog_labels(enabled);
+    }
 
     pub fn status(&self) -> String {
         let status = compact_status(&self.shared.status.lock().unwrap());
@@ -1166,6 +1169,44 @@ pub fn pattern(text: String, regex: bool, ignore_case: bool, invert: bool) -> Pa
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn syslog_label_search_and_traps_keep_archives_raw() {
+        let probe = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let address = probe.local_addr().unwrap();
+        drop(probe);
+        let session = Session::syslog_udp(address.to_string(), 1024 * 1024).unwrap();
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        session.set_syslog_labels(true);
+        session.set_trap_rules(
+            crate::trap::compile_rules(&json!([
+                {"text":"[WARN|LOC7]", "color":"#abcdef"}
+            ]))
+            .unwrap(),
+        );
+        sender.send_to(b"<188>DROP", address).unwrap();
+        wait_for_archive(&session, "<188>DROP\n");
+        assert_eq!(session.trap_hits(), 1);
+        let mut query = Query::default();
+        query.search = pattern("[WARN|LOC7]".into(), false, false, false);
+        query.search.syslog_labels = true;
+        let view = make_view(&session.path, &query, &session.shared);
+        assert_eq!(view.results[0]["line"], 1);
+        assert_eq!(view.results[0]["text"], "<188>DROP");
+        query.search.syslog_labels = false;
+        assert_eq!(
+            make_view(&session.path, &query, &session.shared).results,
+            json!([])
+        );
+        session.set_syslog_labels(false);
+        assert_eq!(session.trap_hits(), 1);
+        sender.send_to(b"<188>DROP again", address).unwrap();
+        wait_for_archive(&session, "<188>DROP\n<188>DROP again\n");
+        assert_eq!(session.trap_hits(), 1);
+        session.set_trap_rules(crate::trap::compile_rules(&json!([{"text":"<188>"}])).unwrap());
+        sender.send_to(b"<188>raw match", address).unwrap();
+        wait_for_archive(&session, "<188>DROP\n<188>DROP again\n<188>raw match\n");
+        assert_eq!(session.trap_hits(), 2);
+    }
     #[test]
     fn syslog_udp_receives_vendor_formats_and_releases_port() {
         let probe = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();

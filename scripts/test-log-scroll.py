@@ -31,7 +31,7 @@ Item {
     height: 600
     readonly property var logText: logDocument.item
     function tr(key) { return key; }
-    QtObject { id: page; property bool follow: true; property bool viewActive: true; function saveView() {} }
+    QtObject { id: page; readonly property var logText: logDocument.item; property bool follow: true; property bool viewActive: true; function saveView() {} }
     QtObject { id: selectionMenu; property string selectedText: ""; property var textItem: null; function popup() {} }
     QtObject {
         id: backend

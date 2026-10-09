@@ -134,19 +134,35 @@ Editing/reconnecting a tab starts a new buffer. Bind failures (including an
 already-used port) are displayed in the tab status.
 
 The **Syslog labels** checkbox (Syslog tabs only; initially off) replaces valid
-leading PRI values with two bracketed, uppercase four-character ASCII labels, e.g.
-`<190>` becomes `[INFO][LOC7]`. Severity labels are `EMRG`, `ALRT`, `CRIT`, `ERRO`,
+leading PRI values with uppercase four-character severity/facility labels joined
+by a pipe inside brackets, e.g. `<190>` becomes `[INFO|LOC7]`.
+Severity labels are `EMRG`, `ALRT`, `CRIT`, `ERRO`,
 `WARN`, `NOTI`, `INFO`, and `DBUG`. Facility labels include `KERN`, `USER`, `MAIL`,
 `DMON`, `AUTH`, `SYSL`, `CRON`, and `LOC0`–`LOC7`; shorter names are space-padded
-inside the brackets (e.g. `[DBUG][FTP ]`).
+inside the brackets (e.g. `[DBUG|FTP ]`).
 Four color families are used, not eight distinct colors. Removing variable-width
 symbols and using equal-length labels aligns valid PRI prefixes in the monospace
 log view. Roto helpers still return full names. Selection/copying copies the displayed labels; disable
-the checkbox to copy the original PRI. The display filter matches the visible
-labels while the option is on (e.g. literal `[DBUG]` or `[DBUG][USER]`), and raw
+the checkbox to copy the original PRI. The display filter, **Search current buffer**,
+and **Text trap** all match the visible
+labels while the option is on (e.g. literal `[DBUG|` or `[DBUG|USER]`), and raw
 messages while it is off. Regex, ignore-case, invert, and numeric conditions use
-that same matching text. Toggling labels automatically reapplies the filter.
-Search, trap matching, archives, and Roto analysis still use the original message.
+that same matching text. Toggling labels automatically reapplies the filter and
+search, and updates existing trap highlights without generating reception alerts.
+In regex mode, escape brackets and the pipe, e.g. `^\[INFO\|LOC7\].* DROP`.
+Archives and Roto analysis still use the original message. Search results retain
+original history line numbers for context navigation. Trap styles take precedence
+over the default severity colors when a rule matches a label.
+With labels enabled, reception traps wait for complete newline-terminated lines
+before transforming/matching them, including literal and non-numeric regex rules.
+Each line is matched independently, so `^`/`$` apply to each Syslog message;
+multi-line reception trap patterns do not span messages in label mode.
+Their pending-line buffer is bounded to 256 KiB; oversized lines are skipped for
+notification and processing resumes after the next newline. UDP reception adds
+the terminator when needed, so normal Syslog datagrams are evaluated immediately
+after their complete payload is ingested. Disabling labels restores the existing
+raw streaming trap behavior. Presentation changes reset partial trap state but
+do not replay previously received messages or reset the cumulative hit count.
 The option is saved with tabs/bookmarks.
 Malformed/missing PRI values are left unchanged.
 
@@ -164,7 +180,7 @@ Rust aggregates currently retained logs into grouped counts,
 sums, averages, minima, or maxima, independently of the display filter.
 Specify result columns such as `path, method, status, avg(elapsed), count()`
 for composite grouping and multiple statistics in one pass.
-LiteLLM / Uvicorn and Apache CLF + `%D` are protected default presets.
+Apache CLF + `%D` and `pg_checkpoint` are protected default presets.
 Save named user presets to preserve the full analysis configuration across
 tabs and restarts; loading a preset does not automatically execute it.
 

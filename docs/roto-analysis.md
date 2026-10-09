@@ -182,8 +182,8 @@ persistent and shared across tabs.
 
 ## Saved analysis presets
 
-The preset selector always includes the protected defaults **LiteLLM / Uvicorn**
-and **Apache CLF + %D**, plus the **pg_checkpoint** template.
+The preset selector always includes the protected defaults **Apache CLF + %D**
+and **pg_checkpoint**.
 The PostgreSQL template groups checkpoints into 30-minute local-time buckets,
 reports write/sync/total durations in seconds, converts written buffers to KB
 (8 KB per buffer), and reports distance and estimate in MB. It also includes the
@@ -546,15 +546,22 @@ time. The template preserves the supplied date/minute display without an
 offset; add `%:z` to the format if repeated DST wall times must stay separate.
 Save edits under a new name to retain the protected template.
 
-### LiteLLM / Uvicorn
+### Custom access-log example
 
-The **LiteLLM / Uvicorn** preset accepts Docker timestamp-prefixed access logs:
+To analyze Docker timestamp-prefixed access logs, enter this extraction regex
+and save the settings as a user preset if needed:
+
+```text
+^(?P<time>\S+)\s+(?P<level>\w+):\s+(?P<client>\S+)\s+-\s+"(?P<method>\S+)\s+(?P<path>\S+)\s+(?P<protocol>[^"]+)"\s+(?P<status>\d{3})(?:\s+.*)?$
+```
+
+Example input:
 
 ```text
 2026-10-07T11:37:54.236480684Z INFO:     123.123.123.123:57260 - "HEAD /ui/policies/ HTTP/1.1" 200 OK
 ```
 
-Its script removes query strings for URL grouping:
+The following script removes query strings for URL grouping:
 
 ```text
 fn parse(c: Captures) -> Record {
@@ -569,7 +576,7 @@ Enter `path, count()` for URL counts, or `status, count()` for HTTP-status count
 
 ### Filtering matching records in Roto
 
-With the LiteLLM / Uvicorn extraction regex, exclude health checks and internal
+With the custom access-log extraction regex above, exclude health checks and internal
 URLs before aggregation:
 
 ```text

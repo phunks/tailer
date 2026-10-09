@@ -166,8 +166,8 @@ pub fn sanitize(value: &Value) -> Value {
                 clean["analysisPresetId"] = json!(
                     tab["analysisPresetId"]
                         .as_str()
-                        .filter(|id| !id.is_empty() && id.len() <= 128)
-                        .unwrap_or("builtin-access")
+                        .filter(|id| !id.is_empty() && id.len() <= 128 && *id != "builtin-access")
+                        .unwrap_or("builtin-apache")
                 );
                 // Old workspaces have no source field: migrate them as file tabs.
                 clean["source"] = json!(tab["source"].as_str().unwrap_or("file"));
@@ -472,15 +472,16 @@ mod tests {
         let clean = sanitize(&json!({
             "tabs": [{"analysisPresetId":"custom-one"}, {"analysisPresetId":"builtin-apache"},
                 {}, {"analysisPresetId":""}, {"analysisPresetId":42},
-                {"analysisPresetId":"x".repeat(129)}],
-            "bookmarks": [{"analysisPresetId":"custom-one"}]
+                {"analysisPresetId":"x".repeat(129)}, {"analysisPresetId":"builtin-access"}],
+            "bookmarks": [{"analysisPresetId":"custom-one"}, {"analysisPresetId":"builtin-access"}]
         }));
         assert_eq!(clean["tabs"][0]["analysisPresetId"], "custom-one");
         assert_eq!(clean["tabs"][1]["analysisPresetId"], "builtin-apache");
-        for index in 2..6 {
-            assert_eq!(clean["tabs"][index]["analysisPresetId"], "builtin-access");
+        for index in 2..7 {
+            assert_eq!(clean["tabs"][index]["analysisPresetId"], "builtin-apache");
         }
         assert_eq!(clean["bookmarks"][0]["analysisPresetId"], "custom-one");
+        assert_eq!(clean["bookmarks"][1]["analysisPresetId"], "builtin-apache");
         assert_eq!(sanitize(&clean), clean);
     }
     #[test]
@@ -510,10 +511,10 @@ mod tests {
         );
         assert!(!restored.to_string().contains("secret"));
         workspace.state = sanitize(&restored);
-        assert_eq!(workspace.analysis_presets().as_array().unwrap().len(), 4);
+        assert_eq!(workspace.analysis_presets().as_array().unwrap().len(), 3);
         assert!(
             workspace
-                .delete_analysis_preset("builtin-access".into())
+                .delete_analysis_preset("builtin-apache".into())
                 .get("error")
                 .is_some()
         );

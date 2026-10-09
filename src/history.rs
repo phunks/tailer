@@ -362,7 +362,7 @@ mod tests {
             .unwrap()
         };
         let mut pattern = Pattern {
-            text: "[DBUG][USER]".into(),
+            text: "[DBUG|USER]".into(),
             syslog_labels: true,
             ..Pattern::default()
         };
@@ -375,16 +375,16 @@ mod tests {
         assert_eq!(scan(pattern.clone()).count, 1);
         pattern.syslog_labels = true;
         assert_eq!(scan(pattern.clone()).count, 0);
-        pattern.text = "[info]".into();
+        pattern.text = "[info|".into();
         pattern.ignore_case = true;
         assert_eq!(scan(pattern.clone()).count, 1);
-        pattern.text = r"^\[(?:DBUG|WARN)\]\[USER\]".into();
+        pattern.text = r"^\[(?:DBUG|WARN)\|USER\]".into();
         pattern.regex = true;
         assert_eq!(scan(pattern.clone()).count, 2);
         pattern.invert = true;
         assert_eq!(scan(pattern.clone()).count, 2);
         pattern.invert = false;
-        pattern.text = r"^\[INFO\]\[LOC7\].* (\d+)$".into();
+        pattern.text = r"^\[INFO\|LOC7\].* (\d+)$".into();
         pattern.numeric = serde_json::json!({"capture":1,"operator":">","value":"30"});
         assert_eq!(scan(pattern).count, 1);
     }

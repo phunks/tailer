@@ -83,8 +83,7 @@ pub fn sanitize(value: &Value) -> Value {
 }
 
 pub fn defaults() -> Vec<Value> {
-    let mut presets: Vec<Value> = [("builtin-access", "LiteLLM / Uvicorn", crate::analysis::ACCESS_REGEX, crate::analysis::ACCESS_SCRIPT, "path, count()"),
-     ("builtin-apache", "Apache CLF + %D", crate::analysis::APACHE_REGEX, crate::analysis::APACHE_SCRIPT, "path, avg(duration_ms), count()")]
+    let mut presets: Vec<Value> = [("builtin-apache", "Apache CLF + %D", crate::analysis::APACHE_REGEX, crate::analysis::APACHE_SCRIPT, "path, avg(duration_ms), count()")]
         .into_iter().map(|(id, name, regex, script, query)| {
             json!({"id":id,"name":name,"builtin":true,
                 "settings":settings(&json!({"regex":regex,"script":script,"query":query})).unwrap()})
@@ -156,7 +155,10 @@ mod tests {
     #[test]
     fn defaults_crud_and_whitelist() {
         let defaults = defaults();
-        assert_eq!(defaults.len(), 3);
+        assert_eq!(defaults.len(), 2);
+        assert_eq!(defaults[0]["id"], "builtin-apache");
+        assert_eq!(defaults[1]["name"], "pg_checkpoint");
+        assert!(defaults.iter().all(|p| p["id"] != "builtin-access"));
         let mut settings = defaults[0]["settings"].clone();
         settings["password"] = json!("secret");
         settings["fields"] =
@@ -166,7 +168,7 @@ mod tests {
         assert!(!rows.to_string().contains("secret"));
         assert_eq!(sanitize(&rows), rows);
         assert!(upsert(&rows, "", "My preset", &settings).is_err());
-        assert!(upsert(&rows, "", "LiteLLM / Uvicorn", &settings).is_err());
+        assert!(upsert(&rows, "", "Apache CLF + %D", &settings).is_err());
         assert!(upsert(&rows, "builtin-access", "other", &settings).is_err());
         assert!(remove(&rows, "builtin-apache").is_err());
         settings["query"] = json!("avg(total)");

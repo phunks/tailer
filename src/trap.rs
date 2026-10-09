@@ -203,6 +203,9 @@ pub struct Trap {
     base: usize,
     seen: Vec<HashSet<usize>>,
     pub hits: u64,
+    syslog_labels: bool,
+    pending_line: Vec<u8>,
+    oversized_line: bool,
 }
 
 pub fn ranges(text: &str, needle: &str, ignore_case: bool) -> Vec<Range<usize>> {
@@ -244,12 +247,69 @@ impl Trap {
         self.reset();
     }
     pub fn reset(&mut self) {
+        self.pending_line.clear();
+        self.oversized_line = false;
         self.carry.clear();
         self.processed = 0;
         self.base = 0;
         self.seen = vec![HashSet::new(); self.rules.len()];
     }
     pub fn receive(&mut self, data: &[u8]) {
+        if self.rules.is_empty() || data.is_empty() {
+            return;
+        }
+        if !self.syslog_labels {
+            self.receive_text(data);
+            return;
+        }
+        // Convert completed lines once, never a partial PRI. Buffering is bounded;
+        // oversized lines are skipped for notification and recover at the newline.
+        for part in data.split_inclusive(|&byte| byte == b'\n') {
+            if self.pending_line.len() + part.len() > CARRY_BYTES {
+                self.pending_line.clear();
+                self.oversized_line = true;
+            }
+            if !self.oversized_line {
+                self.pending_line.extend_from_slice(part);
+            }
+            if part.ends_with(b"\n") {
+                if !self.oversized_line {
+                    let line = String::from_utf8_lossy(&self.pending_line);
+                    let display = crate::syslog::display_text(&line);
+                    // Each Syslog line is a separate record: ^/$ must apply to
+                    // every message, not only the first retained carry buffer.
+                    self.carry.clear();
+                    self.processed = 0;
+                    self.base = 0;
+                    for seen in &mut self.seen {
+                        seen.clear();
+                    }
+                    self.receive_text(display.as_bytes());
+                } else {
+                    // Prevent a match spanning a discarded line.
+                    self.carry.clear();
+                    self.processed = 0;
+                    self.base = 0;
+                    for seen in &mut self.seen {
+                        seen.clear();
+                    }
+                }
+                self.pending_line.clear();
+                self.oversized_line = false;
+            }
+        }
+    }
+    pub fn set_syslog_labels(&mut self, enabled: bool) {
+        if self.syslog_labels != enabled {
+            self.syslog_labels = enabled;
+            // Switching presentation is not new reception. Keep cumulative hits.
+            self.reset();
+        }
+    }
+    fn receive_text(&mut self, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
         if self.rules.is_empty() {
             return;
         }
@@ -270,6 +330,8 @@ impl Trap {
             // may grow into "128", changing both the numeric value and an end anchor.
             let input = if rule.numeric.is_some() {
                 &decoded[..decoded.rfind('\n').map_or(0, |i| i + 1)]
+            } else if self.syslog_labels {
+                decoded.trim_end_matches(['\r', '\n'])
             } else {
                 &decoded
             };
@@ -322,6 +384,14 @@ pub fn highlight_rules(text: &str, rules: &[CompiledRule]) -> String {
 }
 
 pub fn highlight_syslog(text: &str, rules: &[CompiledRule], badges: bool) -> String {
+    let display;
+    let raw = text;
+    let text = if badges {
+        display = crate::syslog::display_text(raw);
+        display.as_str()
+    } else {
+        raw
+    };
     // Qt Quick can carry a translucent character background over a literal
     // newline in <pre>, painting the following row twice. Explicit line breaks
     // preserve the same plain text and line metrics without that format bleed.
@@ -338,7 +408,23 @@ pub fn highlight_syslog(text: &str, rules: &[CompiledRule], badges: bool) -> Str
     let mut spans: Vec<(Range<usize>, &Rule)> = Vec::new();
     for compiled in rules {
         let mut additions = Vec::new();
-        for range in compiled.ranges(text) {
+        let ranges = if badges {
+            let mut ranges = Vec::new();
+            let mut offset = 0;
+            for line in text.split_inclusive('\n') {
+                ranges.extend(
+                    compiled
+                        .ranges(line.trim_end_matches(['\r', '\n']))
+                        .into_iter()
+                        .map(|range| offset + range.start..offset + range.end),
+                );
+                offset += line.len();
+            }
+            ranges
+        } else {
+            compiled.ranges(text)
+        };
+        for range in ranges {
             let mut start = range.start;
             let first = spans.partition_point(|(taken, _)| taken.end <= start);
             for (taken, _) in &spans[first..] {
@@ -364,21 +450,25 @@ pub fn highlight_syslog(text: &str, rules: &[CompiledRule], badges: bool) -> Str
     let mut decorations = Vec::new();
     if badges {
         let mut offset = 0;
-        for line in text.split_inclusive('\n') {
+        for line in raw.split_inclusive('\n') {
             if let Some((start, length, value)) = crate::syslog::decoration(line) {
-                decorations.push((offset + start..offset + start + length, value));
+                let badge_len = crate::syslog::badge(value).len();
+                decorations.push((offset + start..offset + start + badge_len, value));
+                offset += line.len() + badge_len - length;
+            } else {
+                offset += line.len();
             }
-            offset += line.len();
         }
     }
     let mut output = String::from("<pre>");
     let mut previous = 0;
-    // Decoration takes precedence only over the PRI; body matches retain raw offsets.
+    // Explicit trap styles take precedence over default label colors, including
+    // capture/line/background styles. Split decorations around matched spans.
     let mut rendered = Vec::new();
-    for (range, rule) in spans {
+    for (range, value) in decorations {
         let mut start = range.start;
-        let first = decorations.partition_point(|(hidden, _)| hidden.end <= start);
-        for (hidden, _) in &decorations[first..] {
+        let first = spans.partition_point(|(hidden, _)| hidden.end <= start);
+        for (hidden, _) in &spans[first..] {
             if hidden.start >= range.end {
                 break;
             }
@@ -386,16 +476,16 @@ pub fn highlight_syslog(text: &str, rules: &[CompiledRule], badges: bool) -> Str
                 continue;
             }
             if start < hidden.start {
-                rendered.push((start..hidden.start, Some(rule), None));
+                rendered.push((start..hidden.start, None, Some(value)));
             }
             start = start.max(hidden.end);
         }
         if start < range.end {
-            rendered.push((start..range.end, Some(rule), None));
+            rendered.push((start..range.end, None, Some(value)));
         }
     }
-    for (range, value) in decorations {
-        rendered.push((range, None, Some(value)));
+    for (range, rule) in spans {
+        rendered.push((range, Some(rule), None));
     }
     rendered.sort_by_key(|(range, _, _)| range.start);
     for (range, rule, badge) in rendered {
@@ -407,7 +497,7 @@ pub fn highlight_syslog(text: &str, rules: &[CompiledRule], badges: bool) -> Str
             output.push_str(&format!(
                 "<span style=\"color:{};font-weight:bold\">{}</span>",
                 crate::syslog::color(value),
-                escaped(&crate::syslog::badge(value))
+                escaped(&text[range.clone()])
             ));
             previous = range.end;
             continue;
@@ -451,20 +541,94 @@ pub fn context_position(text: &str, selected: Option<usize>) -> i32 {
 mod tests {
     use super::*;
     #[test]
-    fn syslog_badges_keep_raw_trap_offsets_and_escape_body() {
+    fn syslog_badges_match_display_and_escape_body() {
         let rules =
-            compile_rules(&json!([{"text":"<190>.*", "regex":true, "color":"#ef5350"}])).unwrap();
+            compile_rules(&json!([{"text":r"\[INFO\|LOC7\].*", "regex":true, "color":"#ef5350"}]))
+                .unwrap();
         let raw = "<190>hello <script>&\n42: <0>panic\n<192>unchanged\n";
         let html = highlight_syslog(raw, &rules, true);
-        assert!(html.contains("[INFO][LOC7]"));
-        assert!(html.contains("[EMRG][KERN]"));
+        assert!(html.contains("[INFO|LOC7]"));
+        assert!(html.contains("[EMRG|KERN]"));
         assert!(html.contains("hello &lt;script&gt;&amp;"));
+        assert!(html.contains("color:#ef5350;font-weight:bold\">[INFO|LOC7] hello"));
         assert!(!html.contains("&lt;190&gt;"));
         assert!(html.contains("&lt;192&gt;unchanged"));
         assert_eq!(
             highlight_syslog(raw, &rules, false),
             highlight_rules(raw, &rules)
         );
+    }
+    #[test]
+    fn syslog_traps_handle_fragmentation_toggle_and_bounded_lines() {
+        let rules = compile_rules(&json!([
+            {"text":r"^\[WARN\|LOC7\].* DROP (\d+)$", "regex":true,
+             "numeric":{"capture":1,"operator":">","value":"10"}},
+            {"text":"[WARN|LOC7]", "ignoreCase":true},
+            {"text":"<188>"}
+        ]))
+        .unwrap();
+        let mut trap = Trap::default();
+        trap.configure_rules(rules);
+        trap.set_syslog_labels(true);
+        for byte in "<188>日本語 DROP 12\n".as_bytes() {
+            trap.receive(&[*byte]);
+        }
+        assert_eq!(trap.hits, 2);
+        trap.receive(b"");
+        assert_eq!(trap.hits, 2);
+        trap.set_syslog_labels(false);
+        assert_eq!(
+            trap.hits, 2,
+            "Changing presentation must not replay history"
+        );
+        trap.receive(b"<188>raw\n");
+        assert_eq!(trap.hits, 3);
+        trap.set_syslog_labels(true);
+        trap.receive(b"<18");
+        trap.configure_rules(compile_rules(&json!([{"text":"[WARN|LOC7]"}])).unwrap());
+        trap.receive(b"8>discard partial\n");
+        assert_eq!(trap.hits, 3);
+        trap.receive(b"<188>next\n");
+        assert_eq!(trap.hits, 4);
+        trap.receive(&vec![b'x'; CARRY_BYTES + 100]);
+        assert!(trap.pending_line.len() <= CARRY_BYTES);
+        trap.receive(b"\n<188>recovered\n");
+        assert_eq!(trap.hits, 5);
+        trap.configure_rules(
+            compile_rules(&json!([
+                {"text":r"^\[WARN\|LOC7\].* DROP$", "regex":true}
+            ]))
+            .unwrap(),
+        );
+        trap.receive(b"<188>first DROP\n<188>second DROP\n");
+        assert_eq!(trap.hits, 7);
+    }
+
+    #[test]
+    fn syslog_highlights_support_label_captures_and_backgrounds() {
+        let rules = compile_rules(&json!([
+            {"text":r"\[(INFO)\|LOC7\]", "regex":true, "scope":"capture", "color":"#abcdef"}
+        ]))
+        .unwrap();
+        let html = highlight_syslog("<190>body\n", &rules, true);
+        assert!(html.contains("color:#abcdef;font-weight:bold\">INFO</span>"));
+        assert!(html.contains("|LOC7] "));
+        let rules = compile_rules(&json!([
+            {"text":r"^\[INFO\|LOC7\].* (\d+)$", "regex":true, "scope":"line",
+             "background":true, "color":"#abcdef", "opacity":25,
+             "numeric":{"capture":1,"operator":">","value":"10"}}
+        ]))
+        .unwrap();
+        let html = highlight_syslog("<190>body 12\n<190>body 2\n", &rules, true);
+        assert!(html.contains("background-color:#40abcdef\">[INFO|LOC7] body 12</span>"));
+        assert!(!html.contains("<190>"));
+        assert!(!highlight_syslog("<190>body 12\n", &rules, false).contains("background-color"));
+        let rules = compile_rules(&json!([
+            {"text":r"^\[INFO\|LOC7\].* DROP$", "regex":true, "color":"#abcdef"}
+        ]))
+        .unwrap();
+        let html = highlight_syslog("<190>first DROP\n<190>second DROP\n", &rules, true);
+        assert_eq!(html.matches("color:#abcdef").count(), 2);
     }
     #[test]
     fn disabled_rules_preserve_conditions_without_detection_or_highlighting() {
