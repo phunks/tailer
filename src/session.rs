@@ -1,6 +1,7 @@
 use crate::elevation::{Gate, Output};
 use crate::history::{self, Pattern, Query};
 use serde_json::{Value, json};
+use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
@@ -49,13 +50,15 @@ struct Shared {
 
 #[derive(Default)]
 struct RawStream {
-    path: Option<PathBuf>,
+    file: Option<File>,
     bytes: u64,
     decoder: Option<crate::encoding::Decoder>,
     finished: bool,
     limit: u64,
     encoding: String,
-    resets: Vec<u64>,
+    // Absolute offsets avoid rebasing every retained boundary on eviction.
+    original_start: u64,
+    resets: VecDeque<u64>,
     text: history::Ring,
     first_line: usize,
     original: history::Ring,
@@ -457,10 +460,10 @@ impl Session {
         let state = shared.clone();
         let worker = thread::spawn(move || {
             // Larger than the largest UDP payload: no silently truncated datagrams.
-            let mut buffer = [0u8; 65536];
+            let mut buffer = [0u8; 65537];
             let result = (|| -> io::Result<()> {
                 while !state.stop.load(Ordering::Relaxed) {
-                    let count = match socket.recv_from(&mut buffer) {
+                    let count = match socket.recv_from(&mut buffer[..65536]) {
                         Ok((count, _peer)) => count,
                         Err(error)
                             if matches!(
@@ -478,11 +481,13 @@ impl Session {
                     if count == 0 {
                         continue;
                     }
-                    receive_raw(&state, &mut archive, &buffer[..count], false)?;
-                    reset_raw_decoder(&state, &mut archive)?;
-                    if buffer[count - 1] != b'\n' {
-                        receive_raw(&state, &mut archive, b"\n", false)?;
-                    }
+                    let length = if buffer[count - 1] != b'\n' {
+                        buffer[count] = b'\n';
+                        count + 1
+                    } else {
+                        count
+                    };
+                    receive_datagram(&state, &mut archive, &buffer[..length], count)?;
                     *state.status.lock().unwrap() = format!("Listening · UDP {address}");
                 }
                 Ok(())
@@ -704,7 +709,7 @@ impl Session {
         let result = (|| -> io::Result<()> {
             let mut text_window = history::Ring::default();
             let mut first_line = raw.original_first_line;
-            if raw.path.is_some() {
+            if raw.file.is_some() {
                 let mut input = raw.original.reader();
                 let mut buffer = [0; 64 * 1024];
                 let mut position = 0;
@@ -712,6 +717,7 @@ impl Session {
                     .resets
                     .iter()
                     .copied()
+                    .map(|offset| offset - raw.original_start)
                     .chain(std::iter::once(raw.bytes))
                     .enumerate()
                 {
@@ -838,9 +844,9 @@ fn initialize_raw(
     encoding: &str,
 ) -> io::Result<()> {
     let raw_path = path.with_extension("raw");
-    private_file(&raw_path)?;
+    let file = private_file(&raw_path)?;
     *state.raw.lock().unwrap() = RawStream {
-        path: Some(raw_path),
+        file: Some(file),
         decoder: Some(decoder),
         // Legacy MiB settings no longer size the ring. Tiny limits are useful
         // for regression tests of byte-boundary eviction.
@@ -862,9 +868,9 @@ fn reset_raw_decoder(state: &Shared, archive: &mut File) -> io::Result<()> {
         .encoding_errors
         .store(raw.decoder.as_ref().unwrap().errors, Ordering::Relaxed);
     retain_received(state, archive, &mut raw, &text)?;
-    let offset = raw.bytes;
-    if raw.resets.last() != Some(&offset) {
-        raw.resets.push(offset);
+    let offset = raw.original_start + raw.bytes;
+    if raw.resets.back() != Some(&offset) {
+        raw.resets.push_back(offset);
     }
     let errors = raw.decoder.as_ref().unwrap().errors;
     let mut decoder = crate::encoding::Decoder::new(&raw.encoding)?;
@@ -875,35 +881,7 @@ fn reset_raw_decoder(state: &Shared, archive: &mut File) -> io::Result<()> {
 
 fn receive_raw(state: &Shared, archive: &mut File, input: &[u8], finished: bool) -> io::Result<()> {
     let mut raw = state.raw.lock().unwrap();
-    let original_limit = raw.limit as usize * 4;
-    let encoding = raw.encoding.clone();
-    let (discarded, lines) =
-        raw.original
-            .append(input, original_limit, history::RETAIN_LINES, &encoding);
-    raw.original_first_line += lines;
-    raw.original_discarded += discarded;
-    raw.resets = raw
-        .resets
-        .iter()
-        .filter_map(|&offset| offset.checked_sub(discarded as u64))
-        .filter(|&offset| offset > 0)
-        .collect();
-    raw.bytes = raw.original.len() as u64;
-    if let Some(path) = &raw.path {
-        let mut file = OpenOptions::new().write(true).open(path)?;
-        file.seek(SeekFrom::End(0))?;
-        file.write_all(input)?;
-        if should_compact(
-            raw.original_discarded,
-            raw.original.len(),
-            raw.limit as usize * 4,
-        ) {
-            file.seek(SeekFrom::Start(0))?;
-            raw.original.write_to(&mut file)?;
-            file.set_len(raw.original.len() as u64)?;
-            raw.original_discarded = 0;
-        }
-    }
+    retain_original(&mut raw, input)?;
     let decoder = raw
         .decoder
         .as_mut()
@@ -914,6 +892,67 @@ fn receive_raw(state: &Shared, archive: &mut File, input: &[u8], finished: bool)
         .store(decoder.errors, Ordering::Relaxed);
     raw.finished = finished;
     retain_received(state, archive, &mut raw, &text)?;
+    Ok(())
+}
+
+/// `input` includes an optional synthetic newline after the original payload.
+/// Finalize the payload before that newline, preserving datagram isolation.
+fn receive_datagram(
+    state: &Shared,
+    archive: &mut File,
+    input: &[u8],
+    payload_len: usize,
+) -> io::Result<()> {
+    let mut raw = state.raw.lock().unwrap();
+    let boundary = raw.original_start + raw.bytes + payload_len as u64;
+    retain_original(&mut raw, input)?;
+    let decoder = raw.decoder.as_mut().unwrap();
+    let mut text = decoder.decode(&input[..payload_len], true)?;
+    let errors = decoder.errors;
+    let mut decoder = crate::encoding::Decoder::new(&raw.encoding)?;
+    decoder.errors = errors;
+    text.push_str(&decoder.decode(&input[payload_len..], false)?);
+    state
+        .encoding_errors
+        .store(decoder.errors, Ordering::Relaxed);
+    raw.decoder = Some(decoder);
+    if boundary > raw.original_start && raw.resets.back() != Some(&boundary) {
+        raw.resets.push_back(boundary);
+    }
+    raw.finished = false;
+    retain_received(state, archive, &mut raw, &text)
+}
+
+fn retain_original(raw: &mut RawStream, input: &[u8]) -> io::Result<()> {
+    let original_limit = raw.limit as usize * 4;
+    let encoding = raw.encoding.clone();
+    let (discarded, lines) =
+        raw.original
+            .append(input, original_limit, history::RETAIN_LINES, &encoding);
+    raw.original_first_line += lines;
+    raw.original_discarded += discarded;
+    raw.original_start += discarded as u64;
+    while raw
+        .resets
+        .front()
+        .is_some_and(|&offset| offset <= raw.original_start)
+    {
+        raw.resets.pop_front();
+    }
+    raw.bytes = raw.original.len() as u64;
+    if let Some(file) = &mut raw.file {
+        file.write_all(input)?;
+        if should_compact(
+            raw.original_discarded,
+            raw.original.len(),
+            raw.limit as usize * 4,
+        ) {
+            file.seek(SeekFrom::Start(0))?;
+            raw.original.write_to(file)?;
+            file.set_len(raw.original.len() as u64)?;
+            raw.original_discarded = 0;
+        }
+    }
     Ok(())
 }
 
@@ -1169,6 +1208,94 @@ pub fn pattern(text: String, regex: bool, ignore_case: bool, invert: bool) -> Pa
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn syslog_datagrams_replay_boundaries_after_eviction() {
+        for limit in [64, 1024 * 1024] {
+            let directory = create_directory().unwrap();
+            let path = directory.join("received.log");
+            let mut archive = private_file(&path).unwrap();
+            let shared = new_shared(None);
+            initialize_raw(
+                &shared,
+                &path,
+                crate::encoding::Decoder::new("UTF-8").unwrap(),
+                limit,
+                "UTF-8",
+            )
+            .unwrap();
+            let (_, prompts) = mpsc::channel();
+            let session = Session {
+                shared,
+                path,
+                prompts,
+                connection: None,
+                own_transport: None,
+            };
+            for i in 0..400 {
+                // A leading continuation byte must not complete the previous
+                // datagram's incomplete UTF-8, with or without a supplied newline.
+                let mut input = format!("{i}:日本語 ").into_bytes();
+                input.extend_from_slice(if i % 2 == 0 { b"\xe3" } else { b"\x81\x82\n" });
+                let payload_len = input.len();
+                if !input.ends_with(b"\n") {
+                    input.push(b'\n');
+                }
+                let revision = session.shared.revision.load(Ordering::Relaxed);
+                receive_datagram(&session.shared, &mut archive, &input, payload_len).unwrap();
+                assert_eq!(
+                    session.shared.revision.load(Ordering::Relaxed),
+                    revision + 1
+                );
+            }
+            let before = {
+                let raw = session.shared.raw.lock().unwrap();
+                assert_eq!(raw.original_start > 0, limit == 64);
+                assert!(raw.resets.iter().all(|&offset| offset > raw.original_start));
+                assert!(raw.resets.iter().copied().is_sorted());
+                let mut bytes = Vec::new();
+                raw.text.write_to(&mut bytes).unwrap();
+                String::from_utf8(bytes).unwrap()
+            };
+            assert!(before.contains("398:日本語 �\n399:日本語 ��\n"));
+            session.change_encoding("UTF-8").unwrap();
+            assert_eq!(fs::read_to_string(&session.path).unwrap(), before);
+            // Future appends must still use the retained raw file handle after
+            // replay and compaction, not overwrite previously written bytes.
+            receive_datagram(&session.shared, &mut archive, b"next\n", 4).unwrap();
+            session.change_encoding("UTF-8").unwrap();
+            assert!(
+                fs::read_to_string(&session.path)
+                    .unwrap()
+                    .ends_with("next\n")
+            );
+            drop(archive);
+            drop(session);
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn reset_offsets_remain_absolute_without_reallocating_on_receive() {
+        let mut raw = RawStream {
+            limit: 64,
+            ..RawStream::default()
+        };
+        retain_original(&mut raw, b"first\nsecond\n").unwrap();
+        raw.resets.extend([6, 13]);
+        let capacity = raw.resets.capacity();
+        let pointer = raw.resets.as_slices().0.as_ptr();
+        retain_original(&mut raw, b"third\n").unwrap();
+        assert_eq!(raw.resets, VecDeque::from([6, 13]));
+        assert_eq!(raw.resets.capacity(), capacity);
+        assert_eq!(raw.resets.as_slices().0.as_ptr(), pointer);
+        // Eviction removes old boundaries but never rebases retained offsets.
+        let input = b"x\n".repeat(120);
+        retain_original(&mut raw, &input).unwrap();
+        assert_eq!(raw.original_start, 6);
+        assert_eq!(raw.resets, VecDeque::from([13]));
+        assert_eq!(raw.resets.capacity(), capacity);
+    }
+
     #[test]
     fn syslog_label_search_and_traps_keep_archives_raw() {
         let probe = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
