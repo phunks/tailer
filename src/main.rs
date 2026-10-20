@@ -12,6 +12,8 @@ mod encoding;
 mod history;
 mod i18n;
 mod numeric;
+mod process_cpu;
+mod process_memory;
 mod session;
 mod source;
 mod ssh;
@@ -37,6 +39,7 @@ pub struct LogBackend {
     query: history::Query,
     text: String,
     status: String,
+    status_error: bool,
     archive_path: String,
     summary: String,
     query_error: String,
@@ -74,6 +77,7 @@ impl Default for LogBackend {
             query: history::Query::default(),
             text: String::new(),
             status: String::new(),
+            status_error: false,
             archive_path: String::new(),
             summary: String::new(),
             query_error: String::new(),
@@ -207,6 +211,7 @@ impl LogBackend {
         Notify = changed
     );
     qproperty!("status", Read = translated_status, Notify = changed);
+    qproperty!("statusError", Member = status_error, Notify = changed);
     qproperty!("connected", Member = connected, Notify = changed);
     qproperty!("viewRevision", Member = view_revision, Notify = changed);
     qproperty!("lineIds", Member = line_ids, Notify = changed);
@@ -493,7 +498,10 @@ impl LogBackend {
                 self.connected = session.is_connected();
                 self.session = Some(session);
             }
-            Err(error) => self.status = format!("Cannot start: {error}"),
+            Err(error) => {
+                self.status = format!("Cannot start: {error}");
+                self.status_error = true;
+            }
         }
         self.changed();
     }
@@ -692,6 +700,7 @@ impl LogBackend {
         self.analysis_result = json!({});
         self.stop_analysis();
         self.connected = false;
+        self.status_error = false;
         self.pending = None;
         if let Some(session) = self.session.take() {
             session.stop();
@@ -722,6 +731,8 @@ fn main() {
         .unwrap_or("");
     let code = app
         .register::<LogBackend>()
+        .register::<process_cpu::ProcessCpu>()
+        .register::<process_memory::ProcessMemory>()
         .register::<connections::ConnectionManager>()
         .register::<workspace::Workspace>()
         .register::<i18n::Translations>()
@@ -740,7 +751,12 @@ fn main() {
             &args.iter().any(|arg| arg == "--local-command-test"),
         )
         .set_initial_property("i18nTestLanguage", &QString::from(i18n_test_language))
+        .set_initial_property("syslogBindFailureTest", &args.iter().any(|arg| arg == "--syslog-bind-failure-test"))
         .set_initial_property("tabUiTest", &args.iter().any(|arg| arg == "--tab-ui-test"))
+        .set_initial_property(
+            "resourceUiTest",
+            &args.iter().any(|arg| arg == "--resource-ui-test"),
+        )
         .set_initial_property(
             "analysisPresetRestoreTest",
             &args.iter().any(|arg| arg == "--analysis-preset-restore"),

@@ -20,9 +20,11 @@ ApplicationWindow {
     property string i18nTestLanguage: ""
     property bool localCommandTest: false
     property string syslogTestEndpoint: ""
+    property bool syslogBindFailureTest: false
     property string bookmarkTestMode: ""
     property string themeTestMode: ""
     property bool tabUiTest: false
+    property bool resourceUiTest: false
     property bool movingTab: false
     readonly property bool darkAppearance: settings.appearance === "dark"
         || (settings.appearance === "auto" && Qt.styleHints.colorScheme === Qt.Dark)
@@ -80,6 +82,34 @@ ApplicationWindow {
 
     Workspace {
         id: workspace
+    }
+    ProcessCpu { id: processCpu }
+    ProcessMemory { id: processMemory }
+    function resourceStatusValid() {
+        return /^CPU \d+\.\d%$/.test(processCpuLabel.text) && /^RAM \d+\.\d MiB$/.test(processMemoryLabel.text)
+            && processCpuLabel.visible && processMemoryLabel.visible && workspaceFooter.height > 0;
+    }
+    Timer {
+        interval: 2200
+        running: root.resourceUiTest
+        onTriggered: {
+            if (!root.resourceStatusValid()) {
+                console.error("TAILER_RESOURCE_STATUS_FAILED", processCpuLabel.text, processMemoryLabel.text); Qt.exit(1); return;
+            }
+            console.log("TAILER_RESOURCE_STATUS_OK", processCpuLabel.text, processMemoryLabel.text);
+            Qt.quit();
+        }
+    }
+    Timer {
+        id: resourceTimer
+        // Keep resource sampling independent of log-view refresh intervals.
+        interval: 1000
+        repeat: true
+        running: true
+        onTriggered: {
+            processCpu.poll();
+            processMemory.poll();
+        }
     }
     ConnectionManager {
         id: connectionManager
@@ -1382,16 +1412,47 @@ ApplicationWindow {
             }
         }
     }
-    footer: Label {
+    footer: RowLayout {
         id: workspaceFooter
-        function statusText(row, statuses) {
-            const connection = row && row.remote ? statuses[row.connectionId] : "";
-            return connection ? root.tr("SSH transport") + ": " + connection : "";
+        readonly property var activePage: tabs.currentIndex >= 0 && tabs.currentIndex < logs.count
+            ? pageRepeater.itemAt(tabs.currentIndex) : null
+        spacing: 12
+        Label {
+            id: sessionStatusLabel
+            Layout.fillWidth: true
+            Layout.leftMargin: 6
+            // qmllint disable missing-property
+            text: workspace.error || (workspaceFooter.activePage ? workspaceFooter.activePage.backend.status : "")
+            // qmllint enable missing-property
+            // qmllint disable missing-property
+            color: workspace.error || (workspaceFooter.activePage && workspaceFooter.activePage.backend.statusError) ? "red" : palette.text
+            // qmllint enable missing-property
+            elide: Text.ElideRight
+            HoverHandler { id: statusHover }
+            ToolTip.visible: statusHover.hovered && sessionStatusLabel.truncated
+            ToolTip.text: text
         }
-        text: workspace.error || statusText(tabs.currentIndex >= 0 && tabs.currentIndex < logs.count ? logs.get(tabs.currentIndex) : null, connectionManager.statuses || {})
-        visible: text !== ""
-        color: workspace.error ? "red" : palette.text
-        wrapMode: Text.WrapAnywhere
+        Label {
+            id: processCpuLabel
+            objectName: "processCpuLabel"
+            Layout.topMargin: 3
+            Layout.bottomMargin: 3
+            text: processCpu.usage
+            HoverHandler { id: cpuHover }
+            ToolTip.visible: cpuHover.hovered
+            ToolTip.text: root.tr("Tailer process CPU usage. One fully used core = 100%. Excludes child processes and remote hosts.")
+        }
+        Label {
+            id: processMemoryLabel
+            objectName: "processMemoryLabel"
+            Layout.rightMargin: 6
+            Layout.topMargin: 3
+            Layout.bottomMargin: 3
+            text: processMemory.usage
+            HoverHandler { id: memoryHover }
+            ToolTip.visible: memoryHover.hovered
+            ToolTip.text: root.tr("Tailer process resident memory (RSS / working set), including shared pages. Excludes child processes and remote hosts.")
+        }
     }
 
     ColumnLayout {
@@ -1428,7 +1489,7 @@ ApplicationWindow {
                     width: Math.min(Math.max(100, implicitWidth), 260, tabs.availableWidth)
                     rightPadding: 36
                     implicitHeight: Math.max(implicitBackgroundHeight + topInset + bottomInset,
-                                             implicitContentHeight + topPadding + bottomPadding) + 6
+                        implicitContentHeight + topPadding + bottomPadding) + 6
                     background: Rectangle {
                         implicitHeight: 21
                         color: tab.checked ? Qt.lighter(tab.palette.button, 1.50) : (tab.hovered ? Qt.lighter(tab.palette.button, 1.08) : tab.palette.button)
@@ -1873,12 +1934,50 @@ ApplicationWindow {
                         modal: false
                         closePolicy: Popup.CloseOnEscape
                         title: root.tr("Log analysis (Roto)")
-                        standardButtons: Dialog.Close
-                        readonly property real minimumResizeWidth: Math.min(640, parent.width)
-                        readonly property real minimumResizeHeight: Math.min(360, parent.height)
+                        standardButtons: compact ? Dialog.NoButton : Dialog.Close
+                        property bool compact: false
+                        // Overlay popups are not hidden with their owning StackLayout page.
+                        property bool reopenOnActivation: false
+                        Connections {
+                            target: page
+                            function onViewActiveChanged() {
+                                if (!page.viewActive) {
+                                    analysisDialog.reopenOnActivation = analysisDialog.visible;
+                                    analysisPresetDelete.close();
+                                    analysisDialog.close();
+                                } else if (analysisDialog.reopenOnActivation) {
+                                    analysisDialog.reopenOnActivation = false;
+                                    analysisDialog.open();
+                                }
+                            }
+                        }
+                        property size expandedSize: Qt.size(0, 0)
+                        readonly property bool canCompact: !settingsError && !statistics.error
+                            && (statistics.columns || []).length > 0
+                        readonly property real minimumResizeWidth: Math.min(compact ? 280 : 640, parent.width)
+                        readonly property real minimumResizeHeight: Math.min(compact ? 160 : 360, parent.height)
+                        function toggleCompact() {
+                            if (!compact && !canCompact) return;
+                            // Keep the top-left corner fixed instead of recentering on resize.
+                            x = x;
+                            y = y;
+                            if (compact) {
+                                compact = false;
+                                width = Math.min(expandedSize.width, parent.width);
+                                height = Math.min(expandedSize.height, parent.height);
+                            } else {
+                                expandedSize = Qt.size(width, height);
+                                compact = true;
+                                width = Math.min(width, Math.max(320, Math.min(600,
+                                    analysisResultSection.tableWidth + leftPadding + rightPadding + 20)));
+                                height = Math.min(height, Math.max(180, Math.min(360,
+                                    100 + analysisResultSection.sortedRows.length * 30)));
+                            }
+                            analysisContent.contentItem.contentY = 0;
+                        }
                         MouseArea {
                             id: analysisResizeHandle
-                            parent: analysisDialog.footer
+                            parent: analysisDialog.background
                             anchors.right: parent.right
                             anchors.bottom: parent.bottom
                             width: 20
@@ -1924,10 +2023,12 @@ ApplicationWindow {
                             text: analysisDialog.title
                             font.bold: true
                             padding: 12
+                            rightPadding: analysisCompactButton.width + 12
                             elide: Text.ElideRight
                             background: Rectangle { color: analysisDialog.palette.button }
                             MouseArea {
                                 anchors.fill: parent
+                                anchors.rightMargin: analysisCompactButton.width
                                 cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
                                 property point pressPosition
                                 property real startX: 0
@@ -1944,6 +2045,55 @@ ApplicationWindow {
                                         Math.min(startX + position.x - pressPosition.x, analysisDialog.parent.width - 80));
                                     analysisDialog.y = Math.max(0,
                                         Math.min(startY + position.y - pressPosition.y, analysisDialog.parent.height - analysisTitleBar.height));
+                                }
+                            }
+                            ToolButton {
+                                id: analysisCompactButton
+                                objectName: "analysisCompactButton"
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 40
+                                height: parent.height
+                                enabled: analysisDialog.compact || analysisDialog.canCompact
+                                Accessible.name: analysisDialog.compact
+                                    ? root.tr("Restore analysis settings") : root.tr("Show results only")
+                                ToolTip.visible: hovered
+                                ToolTip.text: Accessible.name
+                                onClicked: analysisDialog.toggleCompact()
+                                contentItem: Canvas {
+                                    id: analysisCompactIcon
+                                    implicitWidth: 24
+                                    implicitHeight: 24
+                                    property color strokeColor: analysisCompactButton.enabled
+                                        ? analysisDialog.palette.buttonText : analysisDialog.palette.mid
+                                    property bool expanded: analysisDialog.compact
+                                    onStrokeColorChanged: requestPaint()
+                                    onExpandedChanged: requestPaint()
+                                    onPaint: {
+                                        const ctx = getContext("2d");
+                                        ctx.reset();
+                                        ctx.strokeStyle = strokeColor;
+                                        ctx.lineWidth = 1.8;
+                                        ctx.lineCap = "round";
+                                        ctx.lineJoin = "round";
+                                        ctx.translate(width / 2, height / 2);
+                                        // Two diagonal arrows, pointing inward to shrink and outward to restore.
+                                        for (let side = 0; side < 2; ++side) {
+                                            ctx.save();
+                                            ctx.rotate(side * Math.PI);
+                                            const tip = expanded ? -8 : -2;
+                                            const tail = expanded ? -2 : -8;
+                                            const wing = expanded ? -3 : -7;
+                                            ctx.beginPath();
+                                            ctx.moveTo(tail, tail);
+                                            ctx.lineTo(tip, tip);
+                                            ctx.moveTo(wing, tip);
+                                            ctx.lineTo(tip, tip);
+                                            ctx.lineTo(tip, wing);
+                                            ctx.stroke();
+                                            ctx.restore();
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1996,19 +2146,19 @@ ApplicationWindow {
                             }
                             settingsError = "";
                             return {
-                                    regex: analysisRegex.text,
-                                    script: analysisScript.text,
-                                    useRoto: analysisUseRoto.checked,
-                                    query: analysisQuery.text,
-                                    format: ["regex", "delimiter", "whitespace", "json"][analysisFormat.currentIndex],
-                                    delimiter: analysisDelimiter.text === "\\t" ? "\t" : analysisDelimiter.text,
-                                    filter: analysisFilter.text,
-                                    filterMode: ["contains", "prefix", "regex"][analysisFilterMode.currentIndex],
-                                    ignoreCase: analysisIgnoreCase.checked,
-                                    exclude: analysisExclude.checked,
-                                    mergeFirstColumn: analysisMergeFirstToggle.checked,
-                                    fields: fields
-                                };
+                                regex: analysisRegex.text,
+                                script: analysisScript.text,
+                                useRoto: analysisUseRoto.checked,
+                                query: analysisQuery.text,
+                                format: ["regex", "delimiter", "whitespace", "json"][analysisFormat.currentIndex],
+                                delimiter: analysisDelimiter.text === "\\t" ? "\t" : analysisDelimiter.text,
+                                filter: analysisFilter.text,
+                                filterMode: ["contains", "prefix", "regex"][analysisFilterMode.currentIndex],
+                                ignoreCase: analysisIgnoreCase.checked,
+                                exclude: analysisExclude.checked,
+                                mergeFirstColumn: analysisMergeFirstToggle.checked,
+                                fields: fields
+                            };
                         }
                         function apply() {
                             const s = editorSettings();
@@ -2042,141 +2192,153 @@ ApplicationWindow {
                         }
                         onRejected: close()
                         contentItem: ScrollView {
-                          id: analysisContent
-                          clip: true
-                          contentWidth: availableWidth
-                          ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-                          ColumnLayout {
-                            width: analysisContent.availableWidth
-                            height: Math.max(implicitHeight, analysisContent.availableHeight)
-                            spacing: 8
-                            Label {
-                                text: root.tr("Analyze retained logs, independently of the display filter. Updates every 2 seconds after completion.")
-                                wrapMode: Text.WordWrap
-                                Layout.fillWidth: true
-                            }
-                            RowLayout {
-                                Label { text: root.tr("Analysis preset") }
-                                ComboBox {
-                                    Layout.fillWidth: true
-                                    model: analysisDialog.presetRows.map(p => p.name + (p.builtin ? " [" + root.tr("Default") + "]" : ""))
-                                    currentIndex: analysisDialog.presetRows.findIndex(p => p.id === analysisDialog.selectedPresetId)
-                                    onActivated: analysisDialog.loadSavedPreset(analysisDialog.presetRows[currentIndex].id)
-                                }
-                                Item { Layout.fillWidth: true }
-                                Button {
-                                    id: analysisApplyButton
-                                    text: root.tr("Apply / recalculate")
-                                    palette.button: "#1D4F1D"
-                                    palette.buttonText: "#ffffff"
-                                    onClicked: analysisDialog.apply()
-                                }
-                                Button {
-                                    id: analysisStopButton
-                                    text: root.tr("Stop analysis")
-                                    palette.button: "#4F1916"
-                                    palette.buttonText: "#ffffff"
-                                    onClicked: backend.stop_analysis()
-                                }
-                            }
-                            RowLayout {
-                                TextField { id: analysisPresetName; Layout.fillWidth: true; placeholderText: root.tr("Preset name") }
-                                Button { text: root.tr("Save as new preset"); onClicked: analysisDialog.savePreset(false) }
-                                Button { text: root.tr("Overwrite preset"); enabled: !!analysisDialog.selectedPreset && !analysisDialog.selectedPreset.builtin; onClicked: analysisDialog.savePreset(true) }
-                                Button { text: root.tr("Delete preset"); enabled: !!analysisDialog.selectedPreset && !analysisDialog.selectedPreset.builtin; onClicked: analysisPresetDelete.open() }
-                            }
-                            RowLayout {
-                                Label { text: root.tr("Pre-extraction line filter") }
-                                ComboBox { id: analysisFilterMode; model: [root.tr("Contains"), root.tr("Starts with"), root.tr("Regex")] }
-                                TextField { id: analysisFilter; Layout.fillWidth: true; placeholderText: root.tr("Empty = all") }
-                                CheckBox { id: analysisExclude; text: root.tr("Exclude matches") }
-                                CheckBox { id: analysisIgnoreCase; text: root.tr("Ignore case") }
-                            }
-                            ToolButton {
-                                id: analysisExtractionToggle
-                                checkable: true
-                                text: (checked ? "▼ " : "▶ ") + root.tr("Extraction format")
-                                Accessible.name: text
-                            }
+                            id: analysisContent
+                            clip: true
+                            contentWidth: availableWidth
+                            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                             ColumnLayout {
-                                id: analysisExtractionSection
-                                visible: analysisExtractionToggle.checked
-                                Layout.fillWidth: true
+                                width: analysisContent.availableWidth
+                                height: Math.max(implicitHeight, analysisContent.availableHeight)
                                 spacing: 8
-                                RowLayout {
-                                    ComboBox { id: analysisFormat; model: [root.tr("Regex"), root.tr("Delimiter"), root.tr("Whitespace"), "JSON Lines"] }
-                                    TextField { id: analysisDelimiter; visible: analysisFormat.currentIndex === 1; text: ","; placeholderText: root.tr("Delimiter (tab: \\t)"); Layout.fillWidth: true }
-                                }
-                                Label { visible: analysisFormat.currentIndex === 0; text: root.tr("Extraction regex (named captures)") }
-                                TextField { id: analysisRegex; visible: analysisFormat.currentIndex === 0; Layout.fillWidth: true; selectByMouse: true }
-                                Label { text: root.tr("Field mappings (JSON array; columns start at 0)"); wrapMode: Text.WordWrap; Layout.fillWidth: true }
-                                ScrollView {
+                                Label {
+                                    visible: !analysisDialog.compact
+                                    text: root.tr("Analyze retained logs, independently of the display filter. Updates every 2 seconds after completion.")
+                                    wrapMode: Text.WordWrap
                                     Layout.fillWidth: true
-                                    Layout.preferredHeight: 75
-                                    TextArea {
-                                        id: analysisMappings; text: "[]"; font.family: "monospace"; selectByMouse: true; textFormat: TextEdit.PlainText
-                                        placeholderText: '[{"name":"total","source":"total","type":"number","required":true}]'
+                                }
+                                RowLayout {
+                                    visible: !analysisDialog.compact
+                                    Label { text: root.tr("Analysis preset") }
+                                    ComboBox {
+                                        Layout.fillWidth: true
+                                        model: analysisDialog.presetRows.map(p => p.name + (p.builtin ? " [" + root.tr("Default") + "]" : ""))
+                                        currentIndex: analysisDialog.presetRows.findIndex(p => p.id === analysisDialog.selectedPresetId)
+                                        onActivated: analysisDialog.loadSavedPreset(analysisDialog.presetRows[currentIndex].id)
+                                    }
+                                    Item { Layout.fillWidth: true }
+                                    Button {
+                                        id: analysisApplyButton
+                                        text: root.tr("Apply / recalculate")
+                                        palette.button: "#1D4F1D"
+                                        palette.buttonText: "#ffffff"
+                                        onClicked: analysisDialog.apply()
+                                    }
+                                    Button {
+                                        id: analysisStopButton
+                                        text: root.tr("Stop analysis")
+                                        palette.button: "#4F1916"
+                                        palette.buttonText: "#ffffff"
+                                        onClicked: backend.stop_analysis()
                                     }
                                 }
-                                Label {
-                                    text: root.tr("Source: capture name, column index, or JSON Pointer. Empty mappings preserve regex captures.")
-                                    wrapMode: Text.WordWrap; Layout.fillWidth: true
+                                RowLayout {
+                                    visible: !analysisDialog.compact
+                                    TextField { id: analysisPresetName; Layout.fillWidth: true; placeholderText: root.tr("Preset name") }
+                                    Button { text: root.tr("Save as new preset"); onClicked: analysisDialog.savePreset(false) }
+                                    Button { text: root.tr("Overwrite preset"); enabled: !!analysisDialog.selectedPreset && !analysisDialog.selectedPreset.builtin; onClicked: analysisDialog.savePreset(true) }
+                                    Button { text: root.tr("Delete preset"); enabled: !!analysisDialog.selectedPreset && !analysisDialog.selectedPreset.builtin; onClicked: analysisPresetDelete.open() }
                                 }
-                            }
-                            Label { visible: analysisDialog.settingsError !== ""; text: analysisDialog.settingsError; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-                            RowLayout {
-                                Layout.fillWidth: true
+                                RowLayout {
+                                    visible: !analysisDialog.compact
+                                    Label { text: root.tr("Pre-extraction line filter") }
+                                    ComboBox { id: analysisFilterMode; model: [root.tr("Contains"), root.tr("Starts with"), root.tr("Regex")] }
+                                    TextField { id: analysisFilter; Layout.fillWidth: true; placeholderText: root.tr("Empty = all") }
+                                    CheckBox { id: analysisExclude; text: root.tr("Exclude matches") }
+                                    CheckBox { id: analysisIgnoreCase; text: root.tr("Ignore case") }
+                                }
                                 ToolButton {
-                                    id: analysisRotoToggle
+                                    visible: !analysisDialog.compact
+                                    id: analysisExtractionToggle
                                     checkable: true
-                                    text: (checked ? "▼ " : "▶ ") + root.tr("Enable Roto transformation")
+                                    text: (checked ? "▼ " : "▶ ") + root.tr("Extraction format")
                                     Accessible.name: text
                                 }
-                                Item { Layout.fillWidth: true }
-                                CheckBox {
-                                    id: analysisUseRoto
-                                    checked: true
-                                    Accessible.name: root.tr("Enable Roto transformation")
+                                ColumnLayout {
+                                    id: analysisExtractionSection
+                                    visible: !analysisDialog.compact && analysisExtractionToggle.checked
+                                    Layout.fillWidth: true
+                                    spacing: 8
+                                    RowLayout {
+                                        ComboBox { id: analysisFormat; model: [root.tr("Regex"), root.tr("Delimiter"), root.tr("Whitespace"), "JSON Lines"] }
+                                        TextField { id: analysisDelimiter; visible: analysisFormat.currentIndex === 1; text: ","; placeholderText: root.tr("Delimiter (tab: \\t)"); Layout.fillWidth: true }
+                                    }
+                                    Label { visible: analysisFormat.currentIndex === 0; text: root.tr("Extraction regex (named captures)") }
+                                    TextField { id: analysisRegex; visible: analysisFormat.currentIndex === 0; Layout.fillWidth: true; selectByMouse: true }
+                                    Label { text: root.tr("Field mappings (JSON array; columns start at 0)"); wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                                    ScrollView {
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: 75
+                                        TextArea {
+                                            id: analysisMappings; text: "[]"; font.family: "monospace"; selectByMouse: true; textFormat: TextEdit.PlainText
+                                            placeholderText: '[{"name":"total","source":"total","type":"number","required":true}]'
+                                        }
+                                    }
+                                    Label {
+                                        text: root.tr("Source: capture name, column index, or JSON Pointer. Empty mappings preserve regex captures.")
+                                        wrapMode: Text.WordWrap; Layout.fillWidth: true
+                                    }
                                 }
-                            }
-                            ScrollView {
-                                id: analysisRotoSection
-                                visible: analysisRotoToggle.checked && analysisUseRoto.checked
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 130
-                                TextArea {
-                                    id: analysisScript
-                                    font.family: "monospace"
-                                    wrapMode: TextEdit.NoWrap
-                                    selectByMouse: true
-                                    textFormat: TextEdit.PlainText
+                                Label { visible: !analysisDialog.compact && analysisDialog.settingsError !== ""; text: analysisDialog.settingsError; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                                RowLayout {
+                                    visible: !analysisDialog.compact
+                                    Layout.fillWidth: true
+                                    ToolButton {
+                                        id: analysisRotoToggle
+                                        checkable: true
+                                        text: (checked ? "▼ " : "▶ ") + root.tr("Enable Roto transformation")
+                                        Accessible.name: text
+                                    }
+                                    Item { Layout.fillWidth: true }
+                                    CheckBox {
+                                        id: analysisUseRoto
+                                        checked: true
+                                        Accessible.name: root.tr("Enable Roto transformation")
+                                    }
                                 }
-                            }
-                            ToolButton {
-                                id: analysisPreviewToggle
-                                checkable: true
-                                text: (checked ? "▼ " : "▶ ") + root.tr("Input preview (first 5 lines; after applying)")
-                                Accessible.name: text
-                            }
-                            ScrollView {
-                                id: analysisPreviewSection
-                                visible: analysisPreviewToggle.checked
-                                Layout.fillWidth: true; Layout.preferredHeight: 100
-                                TextArea {
-                                    readOnly: true; selectByMouse: true; font.family: "monospace"; textFormat: TextEdit.PlainText
-                                    text: JSON.stringify(analysisDialog.statistics.preview || [], null, 2)
+                                ScrollView {
+                                    id: analysisRotoSection
+                                    visible: !analysisDialog.compact && analysisRotoToggle.checked && analysisUseRoto.checked
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 130
+                                    TextArea {
+                                        id: analysisScript
+                                        font.family: "monospace"
+                                        wrapMode: TextEdit.NoWrap
+                                        selectByMouse: true
+                                        textFormat: TextEdit.PlainText
+                                    }
                                 }
-                            }
-                            RowLayout {
-                                Label { text: root.tr("Result columns") }
-                                TextField { id: analysisQuery; Layout.fillWidth: true; text: "count()"; selectByMouse: true; placeholderText: "path, method, status, avg(elapsed), max(elapsed), count()" }
-                            }
-                            Label { text: root.tr("Plain fields group rows; aggregates: avg, max, min, sum, count()."); wrapMode: Text.WordWrap; Layout.fillWidth: true }
-                            Label {
-                                Layout.fillWidth: true
-                                wrapMode: Text.WordWrap
-                                text: analysisDialog.statistics.total !== undefined
-                                    ? root.tr("Retained log statistics") + ": " + analysisDialog.statistics.total
+                                ToolButton {
+                                    visible: !analysisDialog.compact
+                                    id: analysisPreviewToggle
+                                    checkable: true
+                                    text: (checked ? "▼ " : "▶ ") + root.tr("Input preview (first 5 lines; after applying)")
+                                    Accessible.name: text
+                                }
+                                ScrollView {
+                                    id: analysisPreviewSection
+                                    visible: !analysisDialog.compact && analysisPreviewToggle.checked
+                                    Layout.fillWidth: true; Layout.preferredHeight: 100
+                                    TextArea {
+                                        readOnly: true; selectByMouse: true; font.family: "monospace"; textFormat: TextEdit.PlainText
+                                        text: JSON.stringify(analysisDialog.statistics.preview || [], null, 2)
+                                    }
+                                }
+                                RowLayout {
+                                    visible: !analysisDialog.compact
+                                    Label { text: root.tr("Result columns") }
+                                    TextField { id: analysisQuery; Layout.fillWidth: true; text: "count()"; selectByMouse: true; placeholderText: "path, method, status, avg(elapsed), max(elapsed), count()" }
+                                }
+                                Label {
+                                    visible: !analysisDialog.compact
+                                    text: root.tr("Plain fields group rows; aggregates: avg, max, min, sum, count()."); wrapMode: Text.WordWrap; Layout.fillWidth: true
+                                }
+                                Label {
+                                    visible: !analysisDialog.compact
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                    text: analysisDialog.statistics.total !== undefined
+                                        ? root.tr("Retained log statistics") + ": " + analysisDialog.statistics.total
                                         + " | " + root.tr("Accepted") + ": " + analysisDialog.statistics.matched
                                         + " | " + root.tr("Skipped") + ": " + analysisDialog.statistics.skipped
                                         + " | " + root.tr("Unmatched") + ": " + analysisDialog.statistics.unmatched
@@ -2184,373 +2346,374 @@ ApplicationWindow {
                                         + " | " + Number(analysisDialog.statistics.elapsedMs).toFixed(1) + " ms"
                                         + " (JIT: " + Number(analysisDialog.statistics.compileMs).toFixed(1) + " ms)"
                                         + " | " + root.tr("Lines") + ": " + (analysisDialog.statistics.firstLine ?? "—") + "–" + (analysisDialog.statistics.lastLine ?? "—")
-                                    : ""
-                            }
-                            RowLayout {
-                                id: analysisResultToolbar
-                                Layout.fillWidth: true
-                                CheckBox {
-                                    id: analysisTextToggle
-                                    text: root.tr("Text display")
+                                        : ""
                                 }
-                                CheckBox {
-                                    id: analysisMergeFirstToggle
-                                    text: root.tr("Merge repeated first-column values")
-                                    enabled: !analysisTextToggle.checked
-                                    checked: page.analysisMergeFirstColumn
-                                    onToggled: analysisDialog.rememberMergeFirstColumn()
-                                }
-                                Item { Layout.fillWidth: true }
-                                // Reserve the slot even while idle so neither toolbar nor results jump.
-                                Item {
-                                    Layout.minimumWidth: 24
-                                    Layout.maximumWidth: 24
-                                    Layout.minimumHeight: 24
-                                    Layout.maximumHeight: 24
-                                    BusyIndicator {
-                                        id: analysisResultBusy
-                                        anchors.fill: parent
-                                        running: backend.analysisBusy
-                                        visible: running
-                                    }
-                                }
-                            }
-                            ColumnLayout {
-                                id: analysisResultSection
-                                visible: !analysisTextToggle.checked
-                                Layout.fillWidth: true
-                                Layout.fillHeight: true
-                                Layout.minimumHeight: 80
-                                Layout.preferredHeight: 180
-                                spacing: 0
-                                readonly property var columns: analysisDialog.statistics.columns || []
-                                property string sortColumn: ""
-                                property bool sortDescending: false
-                                function sortBy(column) {
-                                    if (sortColumn !== column) {
-                                        sortDescending = false;
-                                        sortColumn = column;
-                                    } else if (!sortDescending) {
-                                        sortDescending = true;
-                                    } else {
-                                        sortColumn = "";
-                                        sortDescending = false;
-                                    }
-                                }
-                                readonly property var sortedRows: {
-                                    const rows = analysisDialog.statistics.rows || [];
-                                    const column = columns.indexOf(sortColumn);
-                                    if (column < 0) return rows;
-                                    const direction = sortDescending ? -1 : 1;
-                                    // Sort a copy, using the source index to keep equal values stable.
-                                    return rows.map((row, index) => ({row: row, index: index})).sort((a, b) => {
-                                        const left = (a.row.cells || [])[column];
-                                        const right = (b.row.cells || [])[column];
-                                        // Missing values remain last in either direction.
-                                        if (left == null || right == null) {
-                                            if (left != null) return -1;
-                                            if (right != null) return 1;
-                                            return a.index - b.index;
-                                        }
-                                        const comparison = typeof left === "number" && typeof right === "number"
-                                            ? (left < right ? -1 : left > right ? 1 : 0)
-                                            : String(left).localeCompare(String(right));
-                                        return comparison * direction || a.index - b.index;
-                                    }).map(item => item.row);
-                                }
-                                // Precompute run starts once per refresh/sort, not once per cell.
-                                readonly property var firstColumnRunStarts: {
-                                    const starts = [];
-                                    let start = 0;
-                                    for (let i = 0; i < sortedRows.length; ++i) {
-                                        const value = (sortedRows[i].cells || [])[0];
-                                        const previous = i > 0 ? (sortedRows[i - 1].cells || [])[0] : undefined;
-                                        if (i === 0 || value == null || value !== previous) start = i;
-                                        starts.push(start);
-                                    }
-                                    return starts;
-                                }
-                                property var customColumnWidths: ({})
-                                readonly property real minimumColumnWidth: 64
-                                function resizeColumn(name, width) {
-                                    const updated = Object.assign({}, customColumnWidths);
-                                    Object.defineProperty(updated, name, {
-                                        value: Math.max(minimumColumnWidth, width),
-                                        enumerable: true, configurable: true, writable: true
-                                    });
-                                    customColumnWidths = updated;
-                                }
-                                readonly property var widths: columns.map(name =>
-                                    Object.prototype.hasOwnProperty.call(customColumnWidths, name)
-                                        ? customColumnWidths[name]
-                                        : Math.max(180, Math.min(300, analysisCellMetrics.advanceWidth(name) + 28)))
-                                readonly property real tableWidth: widths.reduce((sum, width) => sum + width, 0)
-                                FontMetrics { id: analysisCellMetrics; font.family: "monospace" }
-                                Flickable {
-                                    id: analysisHeader
+                                RowLayout {
+                                    id: analysisResultToolbar
+                                    visible: !analysisDialog.compact
                                     Layout.fillWidth: true
-                                    Layout.preferredHeight: 32
-                                    clip: true
-                                    interactive: false
-                                    contentWidth: analysisResultSection.tableWidth
-                                    contentX: analysisTable.contentX
-                                    Row {
-                                        Repeater {
-                                            model: analysisResultSection.columns
-                                            delegate: Rectangle {
-                                                id: analysisColumnHeader
-                                                required property int index
-                                                required property string modelData
-                                                objectName: "analysisHeader_" + index
-                                                width: analysisResultSection.widths[index]
-                                                height: 32
-                                                color: palette.button
-                                                border.color: palette.mid
-                                                Label {
-                                                    anchors.fill: parent
-                                                    anchors.margins: 8
-                                                    text: modelData + (analysisResultSection.sortColumn === modelData
-                                                        ? (analysisResultSection.sortDescending ? " ▼" : " ▲") : "")
-                                                    textFormat: Text.PlainText
-                                                    font.bold: true
-                                                    elide: Text.ElideRight
-                                                    verticalAlignment: Text.AlignVCenter
-                                                }
-                                                HoverHandler { id: headerHover }
-                                                MouseArea {
-                                                    anchors.fill: parent
-                                                    cursorShape: Qt.PointingHandCursor
-                                                    onClicked: analysisResultSection.sortBy(modelData)
-                                                }
-                                                MouseArea {
-                                                    objectName: "analysisColumnResize_" + analysisColumnHeader.index
-                                                    anchors.right: parent.right
-                                                    anchors.top: parent.top
-                                                    anchors.bottom: parent.bottom
-                                                    width: 16
-                                                    z: 1
-                                                    cursorShape: Qt.SizeHorCursor
-                                                    preventStealing: true
-                                                    property real pressX: 0
-                                                    property real startWidth: 0
-                                                    onPressed: mouse => {
-                                                        pressX = mapToItem(analysisHeader, mouse.x, mouse.y).x;
-                                                        startWidth = analysisColumnHeader.width;
+                                    CheckBox {
+                                        id: analysisTextToggle
+                                        text: root.tr("Text display")
+                                    }
+                                    CheckBox {
+                                        id: analysisMergeFirstToggle
+                                        text: root.tr("Merge repeated first-column values")
+                                        enabled: !analysisTextToggle.checked
+                                        checked: page.analysisMergeFirstColumn
+                                        onToggled: analysisDialog.rememberMergeFirstColumn()
+                                    }
+                                    Item { Layout.fillWidth: true }
+                                    // Reserve the slot even while idle so neither toolbar nor results jump.
+                                    Item {
+                                        Layout.minimumWidth: 24
+                                        Layout.maximumWidth: 24
+                                        Layout.minimumHeight: 24
+                                        Layout.maximumHeight: 24
+                                        BusyIndicator {
+                                            id: analysisResultBusy
+                                            anchors.fill: parent
+                                            running: backend.analysisBusy
+                                            visible: running
+                                        }
+                                    }
+                                }
+                                ColumnLayout {
+                                    id: analysisResultSection
+                                    visible: analysisDialog.compact || !analysisTextToggle.checked
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    Layout.minimumHeight: 80
+                                    Layout.preferredHeight: 180
+                                    spacing: 0
+                                    readonly property var columns: analysisDialog.statistics.columns || []
+                                    property string sortColumn: ""
+                                    property bool sortDescending: false
+                                    function sortBy(column) {
+                                        if (sortColumn !== column) {
+                                            sortDescending = false;
+                                            sortColumn = column;
+                                        } else if (!sortDescending) {
+                                            sortDescending = true;
+                                        } else {
+                                            sortColumn = "";
+                                            sortDescending = false;
+                                        }
+                                    }
+                                    readonly property var sortedRows: {
+                                        const rows = analysisDialog.statistics.rows || [];
+                                        const column = columns.indexOf(sortColumn);
+                                        if (column < 0) return rows;
+                                        const direction = sortDescending ? -1 : 1;
+                                        // Sort a copy, using the source index to keep equal values stable.
+                                        return rows.map((row, index) => ({row: row, index: index})).sort((a, b) => {
+                                            const left = (a.row.cells || [])[column];
+                                            const right = (b.row.cells || [])[column];
+                                            // Missing values remain last in either direction.
+                                            if (left == null || right == null) {
+                                                if (left != null) return -1;
+                                                if (right != null) return 1;
+                                                return a.index - b.index;
+                                            }
+                                            const comparison = typeof left === "number" && typeof right === "number"
+                                                ? (left < right ? -1 : left > right ? 1 : 0)
+                                                : String(left).localeCompare(String(right));
+                                            return comparison * direction || a.index - b.index;
+                                        }).map(item => item.row);
+                                    }
+                                    // Precompute run starts once per refresh/sort, not once per cell.
+                                    readonly property var firstColumnRunStarts: {
+                                        const starts = [];
+                                        let start = 0;
+                                        for (let i = 0; i < sortedRows.length; ++i) {
+                                            const value = (sortedRows[i].cells || [])[0];
+                                            const previous = i > 0 ? (sortedRows[i - 1].cells || [])[0] : undefined;
+                                            if (i === 0 || value == null || value !== previous) start = i;
+                                            starts.push(start);
+                                        }
+                                        return starts;
+                                    }
+                                    property var customColumnWidths: ({})
+                                    readonly property real minimumColumnWidth: 64
+                                    function resizeColumn(name, width) {
+                                        const updated = Object.assign({}, customColumnWidths);
+                                        Object.defineProperty(updated, name, {
+                                            value: Math.max(minimumColumnWidth, width),
+                                            enumerable: true, configurable: true, writable: true
+                                        });
+                                        customColumnWidths = updated;
+                                    }
+                                    readonly property var widths: columns.map(name =>
+                                        Object.prototype.hasOwnProperty.call(customColumnWidths, name)
+                                            ? customColumnWidths[name]
+                                            : Math.max(180, Math.min(300, analysisCellMetrics.advanceWidth(name) + 28)))
+                                    readonly property real tableWidth: widths.reduce((sum, width) => sum + width, 0)
+                                    FontMetrics { id: analysisCellMetrics; font.family: "monospace" }
+                                    Flickable {
+                                        id: analysisHeader
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: 32
+                                        clip: true
+                                        interactive: false
+                                        contentWidth: analysisResultSection.tableWidth
+                                        contentX: analysisTable.contentX
+                                        Row {
+                                            Repeater {
+                                                model: analysisResultSection.columns
+                                                delegate: Rectangle {
+                                                    id: analysisColumnHeader
+                                                    required property int index
+                                                    required property string modelData
+                                                    objectName: "analysisHeader_" + index
+                                                    width: analysisResultSection.widths[index]
+                                                    height: 32
+                                                    color: palette.button
+                                                    border.color: palette.mid
+                                                    Label {
+                                                        anchors.fill: parent
+                                                        anchors.margins: 8
+                                                        text: modelData + (analysisResultSection.sortColumn === modelData
+                                                            ? (analysisResultSection.sortDescending ? " ▼" : " ▲") : "")
+                                                        textFormat: Text.PlainText
+                                                        font.bold: true
+                                                        elide: Text.ElideRight
+                                                        verticalAlignment: Text.AlignVCenter
                                                     }
-                                                    onPositionChanged: mouse => {
-                                                        if (!pressed) return;
-                                                        const x = mapToItem(analysisHeader, mouse.x, mouse.y).x;
-                                                        analysisResultSection.resizeColumn(analysisColumnHeader.modelData,
-                                                            startWidth + x - pressX);
+                                                    HoverHandler { id: headerHover }
+                                                    MouseArea {
+                                                        anchors.fill: parent
+                                                        cursorShape: Qt.PointingHandCursor
+                                                        onClicked: analysisResultSection.sortBy(modelData)
                                                     }
-                                                }
-                                                ToolTip {
-                                                    id: headerTooltip
-                                                    visible: headerHover.hovered
-                                                    delay: 500
-                                                    text: modelData
-                                                    width: Math.min(600, implicitWidth)
-                                                    contentItem: Label { text: headerTooltip.text; textFormat: Text.PlainText; wrapMode: Text.WrapAnywhere }
+                                                    MouseArea {
+                                                        objectName: "analysisColumnResize_" + analysisColumnHeader.index
+                                                        anchors.right: parent.right
+                                                        anchors.top: parent.top
+                                                        anchors.bottom: parent.bottom
+                                                        width: 16
+                                                        z: 1
+                                                        cursorShape: Qt.SizeHorCursor
+                                                        preventStealing: true
+                                                        property real pressX: 0
+                                                        property real startWidth: 0
+                                                        onPressed: mouse => {
+                                                            pressX = mapToItem(analysisHeader, mouse.x, mouse.y).x;
+                                                            startWidth = analysisColumnHeader.width;
+                                                        }
+                                                        onPositionChanged: mouse => {
+                                                            if (!pressed) return;
+                                                            const x = mapToItem(analysisHeader, mouse.x, mouse.y).x;
+                                                            analysisResultSection.resizeColumn(analysisColumnHeader.modelData,
+                                                                startWidth + x - pressX);
+                                                        }
+                                                    }
+                                                    ToolTip {
+                                                        id: headerTooltip
+                                                        visible: headerHover.hovered
+                                                        delay: 500
+                                                        text: modelData
+                                                        width: Math.min(600, implicitWidth)
+                                                        contentItem: Label { text: headerTooltip.text; textFormat: Text.PlainText; wrapMode: Text.WrapAnywhere }
+                                                    }
                                                 }
                                             }
+                                        }
+                                    }
+                                    ScrollView {
+                                        id: analysisResults
+                                        clip: true
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+                                        ScrollBar.vertical.policy: ScrollBar.AlwaysOn
+                                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                                        ListView {
+                                            id: analysisTable
+                                            clip: true
+                                            contentWidth: Math.max(width, analysisResultSection.tableWidth)
+                                            onContentWidthChanged: Qt.callLater(() => {
+                                                contentX = Math.max(originX, Math.min(contentX,
+                                                    originX + Math.max(0, contentWidth - width)));
+                                            })
+                                            flickableDirection: Flickable.HorizontalAndVerticalFlick
+                                            boundsBehavior: Flickable.StopAtBounds
+                                            readonly property var resultRows: analysisResultSection.sortedRows
+                                            property bool restoringPosition: false
+                                            property real savedX: 0
+                                            property real savedY: 0
+                                            function updateRows() {
+                                                if (!restoringPosition) {
+                                                    savedX = contentX;
+                                                    savedY = contentY;
+                                                }
+                                                restoringPosition = true;
+                                                model = resultRows;
+                                                Qt.callLater(() => {
+                                                    forceLayout();
+                                                    contentX = Math.max(originX, Math.min(savedX,
+                                                        originX + Math.max(0, contentWidth - width)));
+                                                    contentY = Math.max(originY, Math.min(savedY,
+                                                        originY + Math.max(0, contentHeight - height)));
+                                                    restoringPosition = false;
+                                                });
+                                            }
+                                            onResultRowsChanged: updateRows()
+                                            Component.onCompleted: updateRows()
+                                            delegate: Row {
+                                                id: analysisRow
+                                                required property int index
+                                                required property var modelData
+                                                height: 30
+                                                Repeater {
+                                                    model: analysisResultSection.columns.length
+                                                    delegate: Rectangle {
+                                                        id: analysisCell
+                                                        required property int index
+                                                        readonly property var value: (analysisRow.modelData.cells || [])[index]
+                                                        readonly property string fullText: String(value ?? "—")
+                                                        readonly property bool mergedFirstColumn: index === 0 && analysisMergeFirstToggle.checked
+                                                        readonly property int runStart: analysisResultSection.firstColumnRunStarts[analysisRow.index] ?? analysisRow.index
+                                                        readonly property bool continuation: mergedFirstColumn && runStart !== analysisRow.index
+                                                        readonly property bool runEnd: analysisRow.index + 1 >= analysisResultSection.sortedRows.length
+                                                            || analysisResultSection.firstColumnRunStarts[analysisRow.index + 1] !== runStart
+                                                        objectName: "analysisCell_" + analysisRow.index + "_" + index
+                                                        width: analysisResultSection.widths[index]
+                                                        height: 30
+                                                        color: (mergedFirstColumn ? runStart : (analysisRow ? analysisRow.index : 0)) % 2 ? palette.alternateBase : palette.base
+                                                        border.width: mergedFirstColumn ? 0 : 1
+                                                        border.color: palette.midlight
+                                                        Rectangle {
+                                                            width: 1; height: parent.height
+                                                            color: palette.midlight
+                                                            visible: analysisCell.mergedFirstColumn
+                                                        }
+                                                        Rectangle {
+                                                            anchors.right: parent.right
+                                                            width: 1; height: parent.height
+                                                            color: palette.midlight
+                                                            visible: analysisCell.mergedFirstColumn
+                                                        }
+                                                        Rectangle {
+                                                            objectName: "analysisCellTopBorder"
+                                                            width: parent.width; height: 1
+                                                            color: palette.midlight
+                                                            visible: analysisCell.mergedFirstColumn && !analysisCell.continuation
+                                                        }
+                                                        Rectangle {
+                                                            objectName: "analysisCellBottomBorder"
+                                                            anchors.bottom: parent.bottom
+                                                            width: parent.width; height: 1
+                                                            color: palette.midlight
+                                                            visible: analysisCell.mergedFirstColumn && analysisCell.runEnd
+                                                        }
+                                                        Label {
+                                                            id: cellLabel
+                                                            objectName: "analysisCellLabel"
+                                                            visible: !analysisCell.continuation
+                                                            anchors.fill: parent
+                                                            anchors.margins: 7
+                                                            text: typeof analysisCell.value === "number" && !Number.isInteger(analysisCell.value)
+                                                                ? analysisCell.value.toFixed(3) : analysisCell.fullText
+                                                            textFormat: Text.PlainText
+                                                            font.family: "monospace"
+                                                            elide: Text.ElideRight
+                                                            verticalAlignment: Text.AlignVCenter
+                                                            horizontalAlignment: typeof analysisCell.value === "number" ? Text.AlignRight : Text.AlignLeft
+                                                        }
+                                                        HoverHandler { id: cellHover }
+                                                        ToolTip {
+                                                            id: cellTooltip
+                                                            objectName: "analysisCellTooltip"
+                                                            visible: cellHover.hovered
+                                                            delay: 500
+                                                            text: analysisCell.fullText
+                                                            width: Math.min(600, implicitWidth)
+                                                            contentItem: Label { text: cellTooltip.text; textFormat: Text.PlainText; wrapMode: Text.WrapAnywhere }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    ScrollBar {
+                                        id: analysisHorizontalScroll
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: implicitHeight
+                                        orientation: Qt.Horizontal
+                                        visible: analysisTable.contentWidth > analysisTable.width
+                                        policy: ScrollBar.AlwaysOn
+                                        size: analysisTable.visibleArea.widthRatio
+                                        position: analysisTable.visibleArea.xPosition
+                                        onPositionChanged: {
+                                            if (pressed)
+                                                analysisTable.contentX = position * analysisTable.contentWidth;
                                         }
                                     }
                                 }
                                 ScrollView {
-                                    id: analysisResults
-                                    clip: true
+                                    id: analysisTextResults
+                                    visible: !analysisDialog.compact && analysisTextToggle.checked
                                     Layout.fillWidth: true
                                     Layout.fillHeight: true
+                                    Layout.minimumHeight: 80
+                                    Layout.preferredHeight: 180
+                                    clip: true
                                     ScrollBar.vertical.policy: ScrollBar.AlwaysOn
-                                    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-                                    ListView {
-                                        id: analysisTable
-                                        clip: true
-                                        contentWidth: Math.max(width, analysisResultSection.tableWidth)
-                                        onContentWidthChanged: Qt.callLater(() => {
-                                            contentX = Math.max(originX, Math.min(contentX,
-                                                originX + Math.max(0, contentWidth - width)));
-                                        })
-                                        flickableDirection: Flickable.HorizontalAndVerticalFlick
-                                        boundsBehavior: Flickable.StopAtBounds
-                                        readonly property var resultRows: analysisResultSection.sortedRows
+                                    TextArea {
+                                        id: analysisResultText
+                                        readOnly: true
+                                        selectByMouse: true
+                                        font.family: "monospace"
+                                        wrapMode: TextEdit.NoWrap
+                                        textFormat: TextEdit.PlainText
                                         property bool restoringPosition: false
                                         property real savedX: 0
                                         property real savedY: 0
-                                        function updateRows() {
+                                        readonly property string resultText: {
+                                            const r = analysisDialog.statistics;
+                                            const display = value => typeof value === "string" ? JSON.stringify(value) : String(value ?? "—");
+                                            return (r.columns || []).join("\t") + "\n"
+                                                + analysisResultSection.sortedRows.map(row => (row.cells || []).map(display).join("\t")).join("\n");
+                                        }
+                                        function updateResultText() {
+                                            if (text === resultText) return;
+                                            const view = analysisTextResults.contentItem;
                                             if (!restoringPosition) {
-                                                savedX = contentX;
-                                                savedY = contentY;
+                                                savedX = view.contentX;
+                                                savedY = view.contentY;
                                             }
                                             restoringPosition = true;
-                                            model = resultRows;
+                                            text = resultText;
                                             Qt.callLater(() => {
-                                                forceLayout();
-                                                contentX = Math.max(originX, Math.min(savedX,
-                                                    originX + Math.max(0, contentWidth - width)));
-                                                contentY = Math.max(originY, Math.min(savedY,
-                                                    originY + Math.max(0, contentHeight - height)));
+                                                view.contentX = Math.max(view.originX, Math.min(savedX,
+                                                    view.originX + Math.max(0, view.contentWidth - view.width)));
+                                                view.contentY = Math.max(view.originY, Math.min(savedY,
+                                                    view.originY + Math.max(0, view.contentHeight - view.height)));
                                                 restoringPosition = false;
                                             });
                                         }
-                                        onResultRowsChanged: updateRows()
-                                        Component.onCompleted: updateRows()
-                                        delegate: Row {
-                                            id: analysisRow
-                                            required property int index
-                                            required property var modelData
-                                            height: 30
-                                            Repeater {
-                                                model: analysisResultSection.columns.length
-                                                delegate: Rectangle {
-                                                    id: analysisCell
-                                                    required property int index
-                                                    readonly property var value: (analysisRow.modelData.cells || [])[index]
-                                                    readonly property string fullText: String(value ?? "—")
-                                                    readonly property bool mergedFirstColumn: index === 0 && analysisMergeFirstToggle.checked
-                                                    readonly property int runStart: analysisResultSection.firstColumnRunStarts[analysisRow.index] ?? analysisRow.index
-                                                    readonly property bool continuation: mergedFirstColumn && runStart !== analysisRow.index
-                                                    readonly property bool runEnd: analysisRow.index + 1 >= analysisResultSection.sortedRows.length
-                                                        || analysisResultSection.firstColumnRunStarts[analysisRow.index + 1] !== runStart
-                                                    objectName: "analysisCell_" + analysisRow.index + "_" + index
-                                                    width: analysisResultSection.widths[index]
-                                                    height: 30
-                                                    color: (mergedFirstColumn ? runStart : (analysisRow ? analysisRow.index : 0)) % 2 ? palette.alternateBase : palette.base
-                                                    border.width: mergedFirstColumn ? 0 : 1
-                                                    border.color: palette.midlight
-                                                    Rectangle {
-                                                        width: 1; height: parent.height
-                                                        color: palette.midlight
-                                                        visible: analysisCell.mergedFirstColumn
-                                                    }
-                                                    Rectangle {
-                                                        anchors.right: parent.right
-                                                        width: 1; height: parent.height
-                                                        color: palette.midlight
-                                                        visible: analysisCell.mergedFirstColumn
-                                                    }
-                                                    Rectangle {
-                                                        objectName: "analysisCellTopBorder"
-                                                        width: parent.width; height: 1
-                                                        color: palette.midlight
-                                                        visible: analysisCell.mergedFirstColumn && !analysisCell.continuation
-                                                    }
-                                                    Rectangle {
-                                                        objectName: "analysisCellBottomBorder"
-                                                        anchors.bottom: parent.bottom
-                                                        width: parent.width; height: 1
-                                                        color: palette.midlight
-                                                        visible: analysisCell.mergedFirstColumn && analysisCell.runEnd
-                                                    }
-                                                    Label {
-                                                        id: cellLabel
-                                                        objectName: "analysisCellLabel"
-                                                        visible: !analysisCell.continuation
-                                                        anchors.fill: parent
-                                                        anchors.margins: 7
-                                                        text: typeof analysisCell.value === "number" && !Number.isInteger(analysisCell.value)
-                                                            ? analysisCell.value.toFixed(3) : analysisCell.fullText
-                                                        textFormat: Text.PlainText
-                                                        font.family: "monospace"
-                                                        elide: Text.ElideRight
-                                                        verticalAlignment: Text.AlignVCenter
-                                                        horizontalAlignment: typeof analysisCell.value === "number" ? Text.AlignRight : Text.AlignLeft
-                                                    }
-                                                    HoverHandler { id: cellHover }
-                                                    ToolTip {
-                                                        id: cellTooltip
-                                                        objectName: "analysisCellTooltip"
-                                                        visible: cellHover.hovered
-                                                        delay: 500
-                                                        text: analysisCell.fullText
-                                                        width: Math.min(600, implicitWidth)
-                                                        contentItem: Label { text: cellTooltip.text; textFormat: Text.PlainText; wrapMode: Text.WrapAnywhere }
-                                                    }
-                                                }
-                                            }
-                                        }
+                                        onResultTextChanged: updateResultText()
+                                        Component.onCompleted: updateResultText()
                                     }
                                 }
-                                ScrollBar {
-                                    id: analysisHorizontalScroll
+                                ScrollView {
+                                    id: analysisDiagnostics
+                                    visible: !analysisDialog.compact && (!!analysisDialog.statistics.error || (analysisDialog.statistics.samples || []).length > 0)
                                     Layout.fillWidth: true
-                                    Layout.preferredHeight: implicitHeight
-                                    orientation: Qt.Horizontal
-                                    visible: analysisTable.contentWidth > analysisTable.width
-                                    policy: ScrollBar.AlwaysOn
-                                    size: analysisTable.visibleArea.widthRatio
-                                    position: analysisTable.visibleArea.xPosition
-                                    onPositionChanged: {
-                                        if (pressed)
-                                            analysisTable.contentX = position * analysisTable.contentWidth;
+                                    Layout.preferredHeight: 110
+                                    clip: true
+                                    TextArea {
+                                        id: analysisDiagnosticText
+                                        readOnly: true
+                                        selectByMouse: true
+                                        font.family: "monospace"
+                                        wrapMode: TextEdit.WrapAnywhere
+                                        textFormat: TextEdit.PlainText
+                                        text: analysisDialog.statistics.error || (root.tr("Diagnostic samples (up to 5; log text shortened)") + "\n"
+                                            + (analysisDialog.statistics.samples || []).map(s => "#" + s.line + " " + s.reason + "\n" + s.text).join("\n\n"))
                                     }
-                                }
-                            }
-                            ScrollView {
-                                id: analysisTextResults
-                                visible: analysisTextToggle.checked
-                                Layout.fillWidth: true
-                                Layout.fillHeight: true
-                                Layout.minimumHeight: 80
-                                Layout.preferredHeight: 180
-                                clip: true
-                                ScrollBar.vertical.policy: ScrollBar.AlwaysOn
-                                TextArea {
-                                    id: analysisResultText
-                                    readOnly: true
-                                    selectByMouse: true
-                                    font.family: "monospace"
-                                    wrapMode: TextEdit.NoWrap
-                                    textFormat: TextEdit.PlainText
-                                    property bool restoringPosition: false
-                                    property real savedX: 0
-                                    property real savedY: 0
-                                    readonly property string resultText: {
-                                        const r = analysisDialog.statistics;
-                                        const display = value => typeof value === "string" ? JSON.stringify(value) : String(value ?? "—");
-                                        return (r.columns || []).join("\t") + "\n"
-                                            + analysisResultSection.sortedRows.map(row => (row.cells || []).map(display).join("\t")).join("\n");
-                                    }
-                                    function updateResultText() {
-                                        if (text === resultText) return;
-                                        const view = analysisTextResults.contentItem;
-                                        if (!restoringPosition) {
-                                            savedX = view.contentX;
-                                            savedY = view.contentY;
-                                        }
-                                        restoringPosition = true;
-                                        text = resultText;
-                                        Qt.callLater(() => {
-                                            view.contentX = Math.max(view.originX, Math.min(savedX,
-                                                view.originX + Math.max(0, view.contentWidth - view.width)));
-                                            view.contentY = Math.max(view.originY, Math.min(savedY,
-                                                view.originY + Math.max(0, view.contentHeight - view.height)));
-                                            restoringPosition = false;
-                                        });
-                                    }
-                                    onResultTextChanged: updateResultText()
-                                    Component.onCompleted: updateResultText()
-                                }
-                            }
-                            ScrollView {
-                                id: analysisDiagnostics
-                                visible: !!analysisDialog.statistics.error || (analysisDialog.statistics.samples || []).length > 0
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 110
-                                clip: true
-                                TextArea {
-                                    id: analysisDiagnosticText
-                                    readOnly: true
-                                    selectByMouse: true
-                                    font.family: "monospace"
-                                    wrapMode: TextEdit.WrapAnywhere
-                                    textFormat: TextEdit.PlainText
-                                    text: analysisDialog.statistics.error || (root.tr("Diagnostic samples (up to 5; log text shortened)") + "\n"
-                                        + (analysisDialog.statistics.samples || []).map(s => "#" + s.line + " " + s.reason + "\n" + s.text).join("\n\n"))
                                 }
                             }
                         }
-                      }
                         Dialog {
                             id: analysisPresetDelete
                             parent: Overlay.overlay
@@ -3092,7 +3255,7 @@ ApplicationWindow {
                                 }
                                 if (!follow.checked && !explicitChange && displayFrozen) return;
                                 if (!explicitChange && appliedText === backend.highlightedText
-                                        && JSON.stringify(appliedLineIds) === JSON.stringify(backend.lineIds)) return;
+                                    && JSON.stringify(appliedLineIds) === JSON.stringify(backend.lineIds)) return;
                                 let y = savedY;
                                 const contextNavigation = explicitChange && backend.selectedPosition >= 0;
                                 const x = contextNavigation ? 0 : savedX;
@@ -3117,9 +3280,11 @@ ApplicationWindow {
                                 appliedText = backend.highlightedText;
                                 appliedPlainText = backend.displayText === undefined ? backend.text : backend.displayText;
                                 appliedLineIds = nextIds.slice();
-                                if (contextNavigation) {
+                                if (explicitChange) {
                                     // A new TextArea discards both document and scene-graph
                                     // viewport caches left by a previously followed live view.
+                                    // Filters can shrink a long tail to a few rows just like
+                                    // context navigation; keeping the old item hides glyphs.
                                     contentItem.cancelFlick();
                                     contentItem.contentX = 0;
                                     contentItem.contentY = 0;
@@ -3127,6 +3292,9 @@ ApplicationWindow {
                                     logDocument.active = true;
                                 }
                                 logText.text = appliedText;
+                                // Clamp/follow against the new document dimensions, not
+                                // the old tail height while its deferred resize is pending.
+                                logDocument.resizeDocument();
                                 if (contextNavigation) {
                                     const target = logText.positionToRectangle(Math.min(logText.length, backend.selectedPosition));
                                     y = Math.max(0, target.y - (contentItem.height - target.height) / 2);
@@ -3240,7 +3408,7 @@ ApplicationWindow {
                                     readOnly: true
                                     Keys.onPressed: event => {
                                         if ([Qt.Key_Up, Qt.Key_Down, Qt.Key_PageUp, Qt.Key_PageDown, Qt.Key_Home, Qt.Key_End].indexOf(event.key) >= 0
-                                                && scroll.refreshExpiredView()) { event.accepted = true; return; }
+                                            && scroll.refreshExpiredView()) { event.accepted = true; return; }
                                         if (event.key === Qt.Key_Up || event.key === Qt.Key_PageUp || event.key === Qt.Key_Home)
                                             scroll.pauseFollow();
                                         event.accepted = false;
@@ -3301,11 +3469,6 @@ ApplicationWindow {
                             }
                         }
                         Label {
-                            text: backend.status
-                            Layout.fillWidth: true
-                            wrapMode: Text.WrapAnywhere
-                        }
-                        Label {
                             text: backend.credentialStatus
                             visible: text !== ""
                             Layout.fillWidth: true
@@ -3346,7 +3509,7 @@ ApplicationWindow {
                                 // Keep existing delegates for append-only reception updates.
                                 let removed = 0;
                                 while (removed < searchResultsModel.count
-                                        && (next.length === 0 || searchResultsModel.get(removed).modelData.line < next[0].line))
+                                    && (next.length === 0 || searchResultsModel.get(removed).modelData.line < next[0].line))
                                     ++removed;
                                 if (removed > 0) searchResultsModel.remove(0, removed);
                                 let mismatch = false;
@@ -3888,6 +4051,20 @@ ApplicationWindow {
         onTriggered: {
             // qmllint disable missing-property
             const page = pageRepeater.itemAt(0);
+            if (root.syslogBindFailureTest) {
+                const tab = tabRepeater.itemAt(0);
+                if (!page || !tab || page.backend.connected || !page.backend.statusError
+                    || !tab.statusDot.visible || tab.statusDot.color.toString() !== "#e05252"
+                    || !page.backend.status.includes(root.syslogTestEndpoint)
+                    || sessionStatusLabel.text !== page.backend.status || sessionStatusLabel.color.toString() !== "#ff0000") {
+                    console.error("TAILER_SYSLOG_BIND_FAILURE_FAILED", page ? page.backend.status : "missing page"); Qt.exit(1); return;
+                }
+                page.backend.poll();
+                if (!page.backend.statusError || page.backend.connected) {
+                    console.error("TAILER_SYSLOG_BIND_FAILURE_LOST"); Qt.exit(1); return;
+                }
+                console.log("TAILER_SYSLOG_BIND_FAILURE_OK", page.backend.status); Qt.quit(); return;
+            }
             if (++attempts > 150 || !page || !page.backend.connected) {
                 console.error("TAILER_SYSLOG_FAILED", page ? page.backend.status : "missing page"); Qt.exit(1); return;
             }
@@ -3987,10 +4164,7 @@ ApplicationWindow {
                     console.error("TAILER_LOCAL_COMMAND_FAILED"); Qt.exit(1); return;
                 }
                 const tab = tabRepeater.itemAt(0);
-                const fakeStatuses = {test: "ssh_srv: Connected"};
-                if (workspaceFooter.statusText({remote: false, connectionId: "test"}, fakeStatuses).includes("ssh_srv")
-                    || workspaceFooter.statusText({remote: true, connectionId: "other"}, fakeStatuses).includes("ssh_srv")
-                    || workspaceFooter.statusText({remote: true, connectionId: "test"}, fakeStatuses) !== root.tr("SSH transport") + ": ssh_srv: Connected") {
+                if (workspaceFooter.activePage !== page || sessionStatusLabel.text !== page.backend.status) {
                     console.error("TAILER_FOOTER_SCOPE_FAILED"); Qt.exit(1); return;
                 }
                 tabs.currentIndex = -1;
@@ -4155,6 +4329,12 @@ ApplicationWindow {
             }
             // qmllint disable missing-property
             if (root.smokeStage === 4) {
+                if (!root.resourceStatusValid()) {
+                    console.error("TAILER_RESOURCE_STATUS_FAILED", processCpuLabel.text, processMemoryLabel.text); Qt.exit(1); return;
+                }
+                if (workspaceFooter.activePage !== pageRepeater.itemAt(1) || sessionStatusLabel.text !== pageRepeater.itemAt(1).backend.status) {
+                    console.error("TAILER_FOOTER_ACTIVE_TAB_FAILED"); Qt.exit(1); return;
+                }
                 const inactiveTab = tabRepeater.itemAt(0);
                 const activeTab = tabRepeater.itemAt(1);
                 if (!inactiveTab.connected || !inactiveTab.statusDot.visible || inactiveTab.statusDot.color.toString() !== "#35c66b" || activeTab.statusDot.visible) {
@@ -4182,6 +4362,9 @@ ApplicationWindow {
             }
             const first = pageRepeater.itemAt(0).backend;
             if (root.smokeStage === 6) {
+                if (workspaceFooter.activePage !== pageRepeater.itemAt(0) || sessionStatusLabel.text !== first.status) {
+                    console.error("TAILER_FOOTER_TAB_SWITCH_FAILED"); Qt.exit(1); return;
+                }
                 if (!first.highlightedText.includes("color:#35c66b")) {
                     console.error("TAILER_HIGHLIGHT_FAILED"); Qt.exit(1); return;
                 }

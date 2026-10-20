@@ -7,14 +7,14 @@ import tempfile
 
 root = Path(__file__).resolve().parent.parent
 source = (root / "src/Main.qml").read_text()
-start = source.index("                            ToolButton {\n                                id: analysisExtractionToggle")
-end = source.index('                            RowLayout {\n                                Label { text: root.tr("Result columns") }', start)
+start = source.rfind("                                ToolButton {", 0, source.index("id: analysisExtractionToggle"))
+end = source.rfind("                                RowLayout {", start, source.index('Label { text: root.tr("Result columns") }', start))
 sections = source[start:end]
-start = source.index("                            RowLayout {\n                                id: analysisResultToolbar", end)
-end = source.index("\n                        }\n                      }", start)
+start = source.rfind("                                RowLayout {", end, source.index("id: analysisResultToolbar", end))
+end = source.index("\n                            }\n                        }\n                        Dialog {", start)
 results = source[start:end]
-start = source.index("                          id: analysisContent")
-end = source.index("                            Label {", start)
+start = source.index("                            id: analysisContent")
+end = source.index("                                Label {", start)
 content_layout = source[start:end]
 
 fixture = """
@@ -34,6 +34,7 @@ Control {
     }
     QtObject {
         id: analysisDialog
+        property bool compact: false
         property string settingsError: ""
         function rememberMergeFirstColumn() { page.analysisMergeFirstColumn = analysisMergeFirstToggle.checked; }
         property var statistics: ({preview: [{method: "GET"}], columns: ["count"], rows: [{cells: [2]}]})
@@ -48,6 +49,7 @@ Control {
         when: windowShown
         function init() {
             analysisMergeFirstToggle.checked = false;
+            analysisDialog.compact = false;
             analysisResultSection.sortColumn = "";
             analysisResultSection.sortDescending = false;
             analysisResultSection.customColumnWidths = {};

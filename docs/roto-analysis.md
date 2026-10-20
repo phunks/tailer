@@ -43,6 +43,14 @@ Choose **Analyze…** in a log tab to edit filtering, extraction and optional sc
 Drag the title bar to move the analysis dialog, or its bottom-right grip to resize
 it. The log remains interactive while the dialog is open. The dialog keeps its
 position and size when closed and reopened in the same tab (not across restarts).
+After a successful Apply, use the inward diagonal-arrow button at the right of
+the title bar to shrink the dialog to just the result table. The table keeps its
+horizontal/vertical scrolling and live updates. The outward-arrow button restores
+the settings and previous dialog size; compact mode can also be moved and resized.
+Press Escape to close either view.
+Only the selected tab's analysis dialog is shown. Switching tabs hides the previous
+tab's dialog; returning restores it if it was open, including its compact state,
+position and size. A manually closed dialog stays closed when switching tabs.
 Enter result columns, then choose **Apply / recalculate**. Plain fields define
 the composite group; aggregate expressions define statistics. For example:
 

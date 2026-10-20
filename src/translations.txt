@@ -1,4 +1,6 @@
 # English|Japanese|Simplified Chinese|Traditional Chinese|Korean
+Show results only|集計テーブルだけ表示|仅显示汇总表|僅顯示彙總表|집계 표만 표시
+Restore analysis settings|分析設定の表示に戻す|恢复分析设置显示|恢復分析設定顯示|분석 설정 표시로 복원
 Syslog labels|Syslogラベル|Syslog标签|Syslog標籤|Syslog 레이블
 Syslog…|Syslog受信…|接收Syslog…|接收Syslog…|Syslog 수신…
 Syslog (UDP)|Syslog受信（UDP）|Syslog接收（UDP）|Syslog接收（UDP）|Syslog 수신 (UDP)
