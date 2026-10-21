@@ -389,10 +389,10 @@ impl LogBackend {
     fn listen_syslog(&mut self, endpoint: String, capacity_mib: u32) {
         // Release the previous socket before binding the same endpoint again.
         self.stop();
-        self.input_encoding = "UTF-8".into();
         self.install(Session::syslog_udp(
             endpoint,
             u64::from(capacity_mib.max(1)) * 1024 * 1024,
+            &self.input_encoding,
         ));
     }
 

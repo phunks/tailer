@@ -334,7 +334,7 @@ ApplicationWindow {
         return path;
     }
 
-    function addLog(path, source = "file", title = "", encoding = localEncoding.currentText) {
+    function addLog(path, source = "file", title = "", encoding = "UTF-8") {
         logs.append({
             logPath: path,
             logTitle: title || path.split("/").pop(),
@@ -836,7 +836,7 @@ ApplicationWindow {
             const index = tabIndex;
             if (index < 0 || index >= logs.count) return;
             const previous = logs.get(index);
-            const encodingOnly = editSource.currentIndex !== 3 && previous.source === ["file", "docker", "custom", "syslog-udp"][editSource.currentIndex]
+            const encodingOnly = previous.source === ["file", "docker", "custom", "syslog-udp"][editSource.currentIndex]
                 && previous.logPath === editLogPath.text
                 && (!remote || previous.connectionId === connectionProfiles.get(editProfile.currentIndex).id)
                 && previous.elevation === editElevation.currentIndex && previous.runUser === editRunUser.text
@@ -845,7 +845,7 @@ ApplicationWindow {
             logs.setProperty(index, "logTitle", editLogTitle.text.trim() || logs.get(index).logTitle);
             logs.setProperty(index, "source", ["file", "docker", "custom", "syslog-udp"][editSource.currentIndex]);
             logs.setProperty(index, "logPath", editLogPath.text);
-            logs.setProperty(index, "encoding", editSource.currentIndex === 3 ? "UTF-8" : editEncoding.currentText);
+            logs.setProperty(index, "encoding", editEncoding.currentText);
             if (remote) logs.setProperty(index, "connectionId", connectionProfiles.get(editProfile.currentIndex).id);
             logs.setProperty(index, "elevation", editElevation.currentIndex);
             logs.setProperty(index, "runUser", editRunUser.text);
@@ -879,7 +879,7 @@ ApplicationWindow {
             }
             RowLayout {
                 Label { text: root.tr("Input encoding") }
-                ComboBox { id: editEncoding; model: root.encodingOptions; Layout.fillWidth: true; enabled: editSource.currentIndex !== 3 }
+                ComboBox { id: editEncoding; model: root.encodingOptions; Layout.fillWidth: true }
             }
             RowLayout {
                 visible: editTabDialog.remote
@@ -951,7 +951,7 @@ ApplicationWindow {
             Label { text: root.tr("Listen endpoint (IP:port)") }
             TextField { id: syslogEndpoint; text: "127.0.0.1:1514"; placeholderText: "0.0.0.0:1514 / [::]:1514"; Layout.fillWidth: true; selectByMouse: true }
             Label {
-                text: root.tr("Receives raw UTF-8 syslog over UDP. Use 0.0.0.0:1514 for LAN devices. No authentication; restrict access with your firewall. Saved listeners restart on startup.")
+                text: root.tr("Receives raw syslog over UDP. Input encoding defaults to UTF-8 and can be changed in the log toolbar. Use 0.0.0.0:1514 for LAN devices. No authentication; restrict access with your firewall. Saved listeners restart on startup.")
                 wrapMode: Text.WordWrap
                 Layout.fillWidth: true
             }
@@ -1376,12 +1376,6 @@ ApplicationWindow {
             ToolButton {
                 text: root.tr("Open logs…")
                 onClicked: fileDialog.open()
-            }
-            ComboBox {
-                id: localEncoding
-                model: root.encodingOptions
-                ToolTip.text: root.tr("Encoding for new local logs")
-                ToolTip.visible: hovered
             }
             ToolButton {
                 text: root.tr("SSH logs…")
@@ -2937,7 +2931,21 @@ ApplicationWindow {
                                 elide: Text.ElideMiddle
                                 Layout.fillWidth: true
                             }
-                            Label { text: page.encoding + " → UTF-8" }
+                            RowLayout {
+                                id: encodingControls
+                                ComboBox {
+                                    id: inputEncoding
+                                    model: root.encodingOptions
+                                    currentIndex: root.encodingOptions.indexOf(page.encoding)
+                                    onActivated: {
+                                        backend.set_encoding(currentText);
+                                        logs.setProperty(page.index, "encoding", currentText);
+                                        currentIndex = Qt.binding(() => root.encodingOptions.indexOf(page.encoding));
+                                        root.scheduleSave();
+                                    }
+                                }
+                                Label { text: "→ UTF-8" }
+                            }
                             CheckBox {
                                 id: syslogBadgesToggle
                                 visible: page.source === "syslog-udp"
@@ -4126,12 +4134,26 @@ ApplicationWindow {
                 if (editSource.currentIndex !== 3 || editLogPath.text !== root.syslogTestEndpoint) {
                     console.error("TAILER_SYSLOG_EDIT_FAILED"); Qt.exit(1); return;
                 }
+                const archive = b.archivePath;
+                if (logs.get(0).encoding === "CP932") {
+                    editEncoding.currentIndex = root.encodingOptions.indexOf("UTF-8");
+                    editTabDialog.accept();
+                    if (b.archivePath !== archive || !b.connected || logs.get(0).encoding !== "UTF-8") {
+                        console.error("TAILER_SYSLOG_ENCODING_RESTARTED_LISTENER"); Qt.exit(1); return;
+                    }
+                    editTabDialog.edit(0);
+                }
+                editEncoding.currentIndex = root.encodingOptions.indexOf("CP932");
                 editTabDialog.accept();
+                if (b.archivePath !== archive || !b.connected || logs.get(0).encoding !== "CP932") {
+                    console.error("TAILER_SYSLOG_ENCODING_RESTARTED_LISTENER"); Qt.exit(1); return;
+                }
+                page.restartSource();
                 stage = 3;
             } else {
                 root.saveWorkspace();
                 if (workspace.state.tabs[0].source !== "syslog-udp" || workspace.state.tabs[0].logPath !== root.syslogTestEndpoint
-                    || !workspace.state.tabs[0].syslogBadges) {
+                    || !workspace.state.tabs[0].syslogBadges || workspace.state.tabs[0].encoding !== "CP932") {
                     console.error("TAILER_SYSLOG_SAVE_FAILED"); Qt.exit(1); return;
                 }
                 stop();

@@ -457,14 +457,16 @@ mod tests {
     #[test]
     fn syslog_endpoints_round_trip_in_tabs_and_bookmarks() {
         let clean = sanitize(&json!({
-            "tabs": [{"source":"syslog-udp", "logPath":"127.0.0.1:1514", "remote":false, "syslogBadges":true}],
-            "bookmarks": [{"source":"syslog-udp", "logPath":"[::1]:1514", "remote":false, "syslogBadges":true}]
+            "tabs": [{"source":"syslog-udp", "logPath":"127.0.0.1:1514", "remote":false, "syslogBadges":true, "encoding":"CP932"}],
+            "bookmarks": [{"source":"syslog-udp", "logPath":"[::1]:1514", "remote":false, "syslogBadges":true, "encoding":"EUC-JP"}]
         }));
         assert_eq!(clean["tabs"][0]["source"], "syslog-udp");
         assert_eq!(clean["tabs"][0]["logPath"], "127.0.0.1:1514");
         assert_eq!(clean["bookmarks"][0]["logPath"], "[::1]:1514");
         assert_eq!(clean["tabs"][0]["syslogBadges"], true);
         assert_eq!(clean["bookmarks"][0]["syslogBadges"], true);
+        assert_eq!(clean["tabs"][0]["encoding"], "CP932");
+        assert_eq!(clean["bookmarks"][0]["encoding"], "EUC-JP");
         assert_eq!(sanitize(&clean), clean);
     }
     #[test]

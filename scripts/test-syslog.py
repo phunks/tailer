@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory(prefix="tailer-syslog-") as directory:
         probe.bind(("127.0.0.1", 0))
         address = probe.getsockname()
     endpoint = f"{address[0]}:{address[1]}"
-    for _ in range(2):
+    for run in range(2):
         process = subprocess.Popen([str(executable), "--syslog-test", endpoint],
                                    env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
@@ -42,6 +42,8 @@ with tempfile.TemporaryDirectory(prefix="tailer-syslog-") as directory:
                 raise AssertionError("Syslog listener did not bind")
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
                 for message in messages:
+                    if run == 1:
+                        message = message.decode("utf-8").encode("cp932")
                     sender.sendto(message, address)
             stdout, stderr = process.communicate(timeout=20)
             print(stdout, end="")

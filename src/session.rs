@@ -435,7 +435,7 @@ impl Session {
     }
 
     /// Receive raw syslog without enforcing a particular vendor/header syntax.
-    pub fn syslog_udp(endpoint: String, limit: u64) -> io::Result<Self> {
+    pub fn syslog_udp(endpoint: String, limit: u64, encoding: &str) -> io::Result<Self> {
         let address: std::net::SocketAddr = endpoint
             .parse()
             .map_err(|_| io::Error::other("Use an IP address and port, e.g. 127.0.0.1:1514"))?;
@@ -451,9 +451,9 @@ impl Session {
         initialize_raw(
             &shared,
             &path,
-            crate::encoding::Decoder::new("UTF-8")?,
+            crate::encoding::Decoder::new(encoding)?,
             limit,
-            "UTF-8",
+            encoding,
         )?;
         shared.connected.store(true, Ordering::Relaxed);
         *shared.status.lock().unwrap() = format!("Listening · UDP {address}");
@@ -1301,7 +1301,7 @@ mod tests {
         let probe = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let address = probe.local_addr().unwrap();
         drop(probe);
-        let session = Session::syslog_udp(address.to_string(), 1024 * 1024).unwrap();
+        let session = Session::syslog_udp(address.to_string(), 1024 * 1024, "UTF-8").unwrap();
         let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         session.set_syslog_labels(true);
         session.set_trap_rules(
@@ -1339,7 +1339,7 @@ mod tests {
         let probe = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let address = probe.local_addr().unwrap();
         drop(probe);
-        let session = Session::syslog_udp(address.to_string(), 1024 * 1024).unwrap();
+        let session = Session::syslog_udp(address.to_string(), 1024 * 1024, "UTF-8").unwrap();
         let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let messages = [
             "<34>Oct 11 22:14:15 bsd su: failed login",
@@ -1372,12 +1372,43 @@ mod tests {
         assert!(session.is_connected());
         assert!(session.status().contains("UDP"));
         assert!(session.shared.encoding_errors.load(Ordering::Relaxed) > 0);
-        assert!(Session::syslog_udp(address.to_string(), 1024).is_err());
+        assert!(Session::syslog_udp(address.to_string(), 1024, "UTF-8").is_err());
         session.stop();
         assert!(!session.is_connected());
-        let restarted = Session::syslog_udp(address.to_string(), 1024).unwrap();
+        let restarted = Session::syslog_udp(address.to_string(), 1024, "UTF-8").unwrap();
         drop(restarted);
         assert!(std::net::UdpSocket::bind(address).is_ok());
+    }
+
+    #[test]
+    fn syslog_udp_encoding_change_replays_and_keeps_receiving_without_rebinding() {
+        let probe = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let address = probe.local_addr().unwrap();
+        drop(probe);
+        let session = Session::syslog_udp(address.to_string(), 1024 * 1024, "UTF-8").unwrap();
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let message = b"<34>Oct 11 22:14:15 host app: \x93\xfa\x96\x7b\x8c\xea";
+        sender.send_to(message, address).unwrap();
+        let malformed = format!("{}\n", String::from_utf8_lossy(message));
+        wait_for_archive(&session, &malformed);
+        let archive = session.path.clone();
+        session.change_encoding("CP932").unwrap();
+        let decoded = "<34>Oct 11 22:14:15 host app: 日本語\n";
+        wait_for_archive(&session, decoded);
+        assert!(session.is_connected());
+        assert_eq!(session.path, archive);
+        assert!(std::net::UdpSocket::bind(address).is_err());
+        sender.send_to(message, address).unwrap();
+        wait_for_archive(&session, &decoded.repeat(2));
+        session.change_encoding("UTF-8").unwrap();
+        wait_for_archive(&session, &malformed.repeat(2));
+        session.stop();
+
+        // Restart/restoration must use the saved encoding from the first packet.
+        let restored = Session::syslog_udp(address.to_string(), 1024 * 1024, "CP932").unwrap();
+        sender.send_to(message, address).unwrap();
+        wait_for_archive(&restored, decoded);
+        assert_eq!(restored.shared.encoding_errors.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -1385,14 +1416,14 @@ mod tests {
         let probe = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let address = probe.local_addr().unwrap();
         drop(probe);
-        let session = Session::syslog_udp(address.to_string(), 1024 * 1024).unwrap();
+        let session = Session::syslog_udp(address.to_string(), 1024 * 1024, "UTF-8").unwrap();
         let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         // macOS's default UDP send limit can be below the protocol maximum.
         let message = "x".repeat(8_000);
         sender.send_to(message.as_bytes(), address).unwrap();
         wait_for_archive(&session, &(message + "\n"));
         session.stop();
-        let bounded = Session::syslog_udp(address.to_string(), 128).unwrap();
+        let bounded = Session::syslog_udp(address.to_string(), 128, "UTF-8").unwrap();
         for i in 0..10 {
             sender
                 .send_to(format!("{i}:{}", "a".repeat(100)).as_bytes(), address)
@@ -1403,7 +1434,7 @@ mod tests {
         assert!(bounded.shared.raw.lock().unwrap().text.len() <= 128);
         assert!(fs::read_to_string(&bounded.path).unwrap().contains("9:"));
         for invalid in ["localhost:1514", "127.0.0.1:0", "127.0.0.1:65536", "bad"] {
-            assert!(Session::syslog_udp(invalid.into(), 1024).is_err());
+            assert!(Session::syslog_udp(invalid.into(), 1024, "UTF-8").is_err());
         }
     }
 
