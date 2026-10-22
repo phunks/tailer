@@ -363,6 +363,23 @@ Application labels, dialog buttons, status messages, search summaries, and appli
 
 The catalog is `src/translations.txt` in this checkout, with five columns: English key, Japanese, Simplified Chinese, Traditional Chinese, and Korean. Source-code labels and application-owned messages use English keys. `{}` marks dynamic values. Tests check coverage, placeholder counts, and formatted SSH-error translation. Chinese and Korean translations have not had native-speaker review.
 
+## Resource indicators
+
+The footer reports Tailer's own process, excluding child processes and remote
+hosts. On Windows, CPU is normalized to the capacity of all logical processors
+(100% total), comparable to Task Manager. On macOS/Linux, one fully used logical
+processor is 100%, so multi-core usage can exceed 100%.
+
+Windows RAM is the private working set, excluding shared pages, in MiB. It is
+comparable to Task Manager's process Memory column, but sampling intervals and
+active-page accounting can differ. This metric requires Windows 10 version 1703
+or later; unavailable measurements show `RAM —`, without falling back to commit
+size or the shared-inclusive working set. macOS reports the current physical
+memory footprint (`ri_phys_footprint`), comparable to Activity Monitor's Memory
+column. Linux reports shared-inclusive resident memory (RSS). Sampling times and
+display units can differ from system tools; these OS-specific memory metrics are
+not directly comparable across platforms.
+
 ## Testing
 
 With the Qt environment configured:

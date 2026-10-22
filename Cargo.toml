@@ -1,8 +1,13 @@
 [package]
 name = "tailer"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2024"
 license = "MIT"
+
+[profile.release]
+debug = true
+strip = false
+split-debuginfo = "packed"
 
 [dependencies]
 qtbridge = { path = "ext/qtbridge-rust/crates/qtbridge", features = ["serde_json"] }

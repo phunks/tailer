@@ -36,46 +36,43 @@ impl ProcessMemory {
     }
 }
 
-/// Current resident memory, not virtual address space or a historical peak.
+/// Current physical footprint, comparable to Activity Monitor's Memory column.
 #[cfg(target_os = "macos")]
 fn resident_bytes() -> Option<u64> {
     use std::ffi::{c_int, c_void};
 
-    // sys/proc_info.h: proc_taskinfo, PROC_PIDTASKINFO = 4.
+    // sys/resource.h: rusage_info_v0, RUSAGE_INFO_V0 = 0.
     #[derive(Default)]
     #[repr(C)]
-    struct TaskInfo {
-        virtual_size: u64,
+    struct UsageInfo {
+        uuid: [u8; 16],
+        user_time: u64,
+        system_time: u64,
+        package_idle_wakeups: u64,
+        interrupt_wakeups: u64,
+        pageins: u64,
+        wired_size: u64,
         resident_size: u64,
-        total_user: u64,
-        total_system: u64,
-        threads_user: u64,
-        threads_system: u64,
-        counters: [i32; 12],
+        physical_footprint: u64,
+        process_start: u64,
+        process_exit: u64,
     }
     #[link(name = "proc")]
     unsafe extern "C" {
-        fn proc_pidinfo(
-            pid: c_int,
-            flavor: c_int,
-            arg: u64,
-            buffer: *mut c_void,
-            size: c_int,
-        ) -> c_int;
+        fn proc_pid_rusage(pid: c_int, flavor: c_int, buffer: *mut c_void) -> c_int;
     }
-    let mut info = TaskInfo::default();
-    let size = std::mem::size_of::<TaskInfo>() as c_int;
-    // SAFETY: info matches proc_taskinfo's C layout and the supplied buffer size.
-    let read = unsafe {
-        proc_pidinfo(
+    let mut info = UsageInfo::default();
+    // The API's rusage_info_t* is an opaque output buffer, not a pointer to an
+    // allocated pointer. V0's layout is 16 UUID bytes followed by ten u64s.
+    // SAFETY: info is writable and matches the selected rusage_info_v0 layout.
+    let result = unsafe {
+        proc_pid_rusage(
             std::process::id() as c_int,
-            4,
             0,
-            (&mut info as *mut TaskInfo).cast(),
-            size,
+            (&mut info as *mut UsageInfo).cast(),
         )
     };
-    (read == size).then_some(info.resident_size)
+    (result == 0).then_some(info.physical_footprint)
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -100,6 +97,9 @@ fn resident_bytes() -> Option<u64> {
 fn resident_bytes() -> Option<u64> {
     use std::ffi::c_void;
 
+    if !supports_private_working_set() {
+        return None;
+    }
     #[derive(Default)]
     #[repr(C)]
     struct MemoryCounters {
@@ -113,6 +113,9 @@ fn resident_bytes() -> Option<u64> {
         quota_non_paged_pool: usize,
         pagefile: usize,
         peak_pagefile: usize,
+        private_usage: usize,
+        private_working_set: usize,
+        shared_commit_usage: usize,
     }
     #[link(name = "kernel32")]
     unsafe extern "system" {
@@ -128,9 +131,50 @@ fn resident_bytes() -> Option<u64> {
         size,
         ..Default::default()
     };
-    // SAFETY: the pseudo-handle is valid; counters matches PROCESS_MEMORY_COUNTERS.
+    // PROCESS_MEMORY_COUNTERS_EX2 (Windows 10 1703+). Do not substitute
+    // PrivateUsage: that is committed private memory, not resident private pages.
+    // SAFETY: the pseudo-handle is valid; counters matches the EX2 C layout.
     let result = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, size) };
-    (result != 0).then_some(counters.working_set as u64)
+    (result != 0).then_some(counters.private_working_set as u64)
+}
+
+#[cfg(target_os = "windows")]
+fn supports_private_working_set() -> bool {
+    use std::sync::OnceLock;
+
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        #[repr(C)]
+        struct VersionInfo {
+            size: u32,
+            major: u32,
+            minor: u32,
+            build: u32,
+            platform: u32,
+            service_pack: [u16; 128],
+        }
+        #[link(name = "ntdll")]
+        unsafe extern "system" {
+            fn RtlGetVersion(version: *mut VersionInfo) -> i32;
+        }
+        let mut version = VersionInfo {
+            size: std::mem::size_of::<VersionInfo>() as u32,
+            major: 0,
+            minor: 0,
+            build: 0,
+            platform: 0,
+            service_pack: [0; 128],
+        };
+        // RtlGetVersion is not affected by the application's compatibility manifest.
+        // SAFETY: version is a writable OSVERSIONINFOW with its correct size.
+        let result = unsafe { RtlGetVersion(&mut version) };
+        result == 0 && private_working_set_supported(version.major, version.build)
+    })
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn private_working_set_supported(major: u32, build: u32) -> bool {
+    major > 10 || (major == 10 && build >= 15063)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -141,6 +185,16 @@ fn resident_bytes() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_working_set_requires_windows_10_1703_or_later() {
+        assert!(!private_working_set_supported(6, 9600));
+        assert!(!private_working_set_supported(10, 14393));
+        assert!(!private_working_set_supported(10, 15062));
+        assert!(private_working_set_supported(10, 15063));
+        assert!(private_working_set_supported(10, 26100));
+        assert!(private_working_set_supported(11, 1));
+    }
 
     #[test]
     fn formats_current_memory_in_mib_or_unavailable() {
@@ -156,6 +210,12 @@ mod tests {
     #[test]
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     fn platform_reports_current_resident_memory() {
+        #[cfg(target_os = "windows")]
+        if !supports_private_working_set() {
+            assert_eq!(resident_bytes(), None);
+            assert_eq!(ProcessMemory::default().usage, "RAM —");
+            return;
+        }
         assert!(resident_bytes().expect("current resident memory") > 0);
         assert!(ProcessMemory::default().usage.ends_with(" MiB"));
     }

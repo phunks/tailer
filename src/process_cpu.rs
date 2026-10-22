@@ -25,6 +25,7 @@ impl Sampler {
 
 pub struct ProcessCpu {
     sampler: Sampler,
+    logical_processors: Option<usize>,
     usage: String,
 }
 
@@ -34,6 +35,7 @@ impl Default for ProcessCpu {
         sampler.sample(Instant::now(), process_time());
         Self {
             sampler,
+            logical_processors: cpu_divisor(),
             usage: "CPU —".into(),
         }
     }
@@ -49,13 +51,42 @@ impl ProcessCpu {
     #[qslot]
     fn poll(&mut self) {
         let cpu = process_time();
-        let usage = self.sampler.sample(Instant::now(), cpu);
+        let usage = self
+            .sampler
+            .sample(Instant::now(), cpu)
+            .and_then(|value| normalize_usage(value, self.logical_processors));
         let text = usage.map_or_else(|| "CPU —".into(), |value| format!("CPU {value:.1}%"));
         if self.usage != text {
             self.usage = text;
             self.changed();
         }
     }
+}
+
+// Windows Task Manager uses total machine capacity; Unix tools conventionally
+// report one fully utilized logical processor as 100%.
+fn normalize_usage(value: f64, logical_processors: Option<usize>) -> Option<f64> {
+    logical_processors
+        .filter(|&count| count > 0)
+        .map(|count| value / count as f64)
+}
+
+#[cfg(target_os = "windows")]
+fn cpu_divisor() -> Option<usize> {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetActiveProcessorCount(group_number: u16) -> u32;
+    }
+    // ALL_PROCESSOR_GROUPS: include machines with more than 64 logical CPUs,
+    // rather than limiting normalization to the calling thread's group/affinity.
+    // SAFETY: this API accepts the documented all-groups constant, no pointers.
+    let count = unsafe { GetActiveProcessorCount(0xffff) } as usize;
+    (count > 0).then_some(count)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn cpu_divisor() -> Option<usize> {
+    Some(1)
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -145,6 +176,17 @@ fn process_time() -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalizes_machine_usage_without_changing_single_core_scale() {
+        assert_eq!(normalize_usage(32.0, Some(10)), Some(3.2));
+        assert_eq!(normalize_usage(1000.0, Some(10)), Some(100.0));
+        assert_eq!(normalize_usage(200.0, Some(1)), Some(200.0));
+        assert_eq!(normalize_usage(0.0, Some(10)), Some(0.0));
+        assert_eq!(normalize_usage(32.0, Some(0)), None);
+        assert_eq!(normalize_usage(32.0, None), None);
+        assert!(cpu_divisor().is_some_and(|count| count > 0));
+    }
 
     #[test]
     fn measures_interval_usage_including_multiple_cores() {

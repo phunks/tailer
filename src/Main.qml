@@ -1434,7 +1434,9 @@ ApplicationWindow {
             text: processCpu.usage
             HoverHandler { id: cpuHover }
             ToolTip.visible: cpuHover.hovered
-            ToolTip.text: root.tr("Tailer process CPU usage. One fully used core = 100%. Excludes child processes and remote hosts.")
+            ToolTip.text: Qt.platform.os === "windows"
+                ? root.tr("Tailer process CPU usage as a percentage of total CPU capacity (all logical processors = 100%), comparable to Windows Task Manager. Excludes child processes and remote hosts.")
+                : root.tr("Tailer process CPU usage. One fully used core = 100%. Excludes child processes and remote hosts.")
         }
         Label {
             id: processMemoryLabel
@@ -1445,7 +1447,11 @@ ApplicationWindow {
             text: processMemory.usage
             HoverHandler { id: memoryHover }
             ToolTip.visible: memoryHover.hovered
-            ToolTip.text: root.tr("Tailer process resident memory (RSS / working set), including shared pages. Excludes child processes and remote hosts.")
+            ToolTip.text: Qt.platform.os === "windows"
+                ? root.tr("Tailer process private working set in MiB, excluding shared pages. Comparable to Task Manager's process Memory column; sampling and active-page accounting may differ. Requires Windows 10 version 1703 or later. Excludes child processes and remote hosts.")
+                : Qt.platform.os === "osx"
+                    ? root.tr("Tailer process physical memory footprint in MiB, comparable to Activity Monitor's Memory column. Sampling times may differ. Excludes child processes and remote hosts.")
+                    : root.tr("Tailer process resident memory (RSS), including shared pages, in MiB. Excludes child processes and remote hosts.")
         }
     }
 
