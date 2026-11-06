@@ -106,7 +106,10 @@ jobs:
           $packageDirectory = "dist/$env:RELEASE_NAME"
           New-Item -ItemType Directory -Force -Path $packageDirectory | Out-Null
           Copy-Item "target/${{ matrix.job.target }}/release/tailer.exe" "$packageDirectory/tailer.exe"
+          Copy-Item "target/${{ matrix.job.target }}/release/tailer.pdb" "$packageDirectory/tailer.pdb"
           Copy-Item README.md "$packageDirectory/"
+          New-Item -ItemType Directory -Force -Path "$packageDirectory/docs" | Out-Null
+          Copy-Item docs/windows-debugging.md "$packageDirectory/docs/"
           Copy-Item LICENSE, THIRD_PARTY_NOTICES.md "$packageDirectory/"
           Copy-Item -Recurse licenses "$packageDirectory/licenses"
           & windeployqt --release --qmldir "$env:GITHUB_WORKSPACE/src" "$packageDirectory/tailer.exe"

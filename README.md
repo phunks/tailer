@@ -1,3 +1,4 @@
+
 # Tailer
 A multi-tab log viewer built with Rust, Qt Bridge for Rust, and Qt Quick.
 ![window.png](.github/images/window.png)
@@ -71,6 +72,19 @@ Studio Developer shell. The workflow sets this environment up and uses
 `windeployqt` to include Qt DLLs, plugins, QML modules, and the MSVC runtime.
 Windows packages are not Authenticode signed. Windows runtime behavior has not
 been verified on the macOS development machine.
+
+### Windows diagnostics build
+
+Use **Actions → Windows diagnostics → Run workflow** to obtain an optimized
+Windows build with `tailer.exe`, its matching `tailer.pdb`, and the Qt runtime
+files. No development tools are needed on the affected machine. The artifact
+also records the source revision, toolchain, Qt version, and binary hashes.
+Normal Windows release ZIPs include their matching PDB too.
+
+See [Windows crash and hang diagnostics](docs/windows-debugging.md) for download,
+dump collection, WinDbg symbol loading, and all-thread hang analysis. Keep the
+EXE and PDB from the same build; a new PDB will not repair an old dump's missing
+symbols. Dumps may contain passwords and log data and must not be shared publicly.
 
 ## Basic usage
 

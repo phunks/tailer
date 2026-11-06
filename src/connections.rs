@@ -48,7 +48,10 @@ pub fn acquire(profile: &Value, options: &SshOptions) -> io::Result<Rc<Managed>>
 
 #[derive(Default)]
 pub struct ConnectionManager {
-    auth: LogBackend,
+    // Qt Bridge looks up QObject proxies by the Rust object's address. An
+    // inline backend can share this manager's address and emit its signals
+    // through the wrong proxy. Keep the private, unattached helper separate.
+    auth: Box<LogBackend>,
     current: Option<Weak<Managed>>,
     auth_prompt: String,
     auth_confirmation: bool,
@@ -175,6 +178,75 @@ impl ConnectionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use qtbridge::{QObjectHolder, QmlObject};
+    use std::{sync::mpsc, time::Duration};
+
+    fn install_prompt(manager: &mut ConnectionManager) -> mpsc::Receiver<Option<String>> {
+        let (reply, answer) = mpsc::channel();
+        manager.auth.auth_prompt = "Verify SSH host key".into();
+        manager.auth.auth_confirmation = true;
+        manager.auth.prompt = Some(crate::session::Prompt {
+            message: manager.auth.auth_prompt.clone(),
+            confirmation: true,
+            reply,
+            credential: None,
+        });
+        manager.poll();
+        answer
+    }
+
+    #[test]
+    fn auth_helper_does_not_resolve_to_manager_qobject() {
+        let manager = ConnectionManager::default_with_attached_qobject();
+        let manager = manager.borrow();
+        assert!(!manager.get_qobject_ptr().is_null());
+        assert!(
+            manager.auth.get_qobject_ptr().is_null(),
+            "The private auth helper must not use the connection manager's Qt proxy"
+        );
+    }
+
+    #[test]
+    fn attached_manager_answers_host_key_prompt_and_polls_feedback() {
+        for accepted in [true, false] {
+            let manager = ConnectionManager::default_with_attached_qobject();
+            let mut manager = manager.borrow_mut();
+            let answer = install_prompt(&mut manager);
+            assert_eq!(manager.auth_prompt, "Verify SSH host key");
+            assert!(manager.auth_confirmation);
+            assert!(!manager.auth_storable);
+
+            manager.answer_auth("yes".into(), accepted, false);
+            assert_eq!(
+                answer.recv_timeout(Duration::from_secs(2)).unwrap(),
+                accepted.then(|| "yes".into())
+            );
+            assert!(manager.auth_prompt.is_empty());
+            assert!(manager.auth.prompt.is_none());
+
+            // Exercise the helper's changed() notification without accessing
+            // the user's real credential store.
+            let (feedback, receiver) = mpsc::channel();
+            manager.auth.credential_feedback = Some(receiver);
+            feedback
+                .send("Saved in OS credential store".into())
+                .unwrap();
+            manager.poll();
+            assert_eq!(manager.credential_status, "Saved in OS credential store");
+        }
+    }
+
+    #[test]
+    fn attached_manager_cancels_prompt_when_connection_expires() {
+        let manager = ConnectionManager::default_with_attached_qobject();
+        let mut manager = manager.borrow_mut();
+        let answer = install_prompt(&mut manager);
+        manager.current = Some(Weak::new());
+        manager.poll();
+        assert_eq!(answer.recv_timeout(Duration::from_secs(2)).unwrap(), None);
+        assert!(manager.auth_prompt.is_empty());
+        assert!(manager.current.is_none());
+    }
 
     #[test]
     fn registry_shares_transport_and_last_reference_stops_it() {

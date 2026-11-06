@@ -1,0 +1,113 @@
+name: Windows diagnostics
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      RUST_TARGET: x86_64-pc-windows-msvc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup MSVC and Windows SDK
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install just
+        uses: taiki-e/install-action@just
+
+      - name: Setup Qt Bridge sources
+        shell: bash
+        run: just setup-ext
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.RUST_TARGET }}
+
+      - name: Setup Python for Qt installer
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.10.0'
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+
+      # Use the normal release profile to preserve optimization and GUI behavior.
+      # Cargo.toml enables full debug info and disables stripping for this profile.
+      - name: Build optimized application with symbols
+        shell: pwsh
+        run: |
+          cargo build --release --locked --target $env:RUST_TARGET
+          if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+          if (-not (Test-Path "target/$env:RUST_TARGET/release/tailer.pdb")) {
+            throw "The build did not produce tailer.pdb; do not publish an EXE without matching symbols"
+          }
+
+      - name: Deploy application and record build identity
+        shell: pwsh
+        run: |
+          $packageDirectory = "dist/windows-diagnostics"
+          New-Item -ItemType Directory -Force -Path $packageDirectory | Out-Null
+          Copy-Item "target/$env:RUST_TARGET/release/tailer.exe", "target/$env:RUST_TARGET/release/tailer.pdb" "$packageDirectory/"
+          Copy-Item README.md, LICENSE, THIRD_PARTY_NOTICES.md "$packageDirectory/"
+          Copy-Item -Recurse licenses "$packageDirectory/licenses"
+          New-Item -ItemType Directory -Force -Path "$packageDirectory/docs" | Out-Null
+          Copy-Item docs/windows-debugging.md "$packageDirectory/docs/"
+          Copy-Item Cargo.lock "$packageDirectory/"
+          & windeployqt --release --compiler-runtime --qmldir "$env:GITHUB_WORKSPACE/src" "$packageDirectory/tailer.exe"
+          if ($LASTEXITCODE -ne 0) { throw "windeployqt failed" }
+          foreach ($file in @("tailer.exe", "tailer.pdb", "Qt6Core.dll", "platforms/qwindows.dll")) {
+            if (-not (Test-Path "$packageDirectory/$file")) {
+              throw "Missing deployed file: $file"
+            }
+          }
+
+          $bridgeRevision = git -C ext/qtbridge-rust rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw "Cannot identify Qt Bridge revision" }
+          $qtVersion = qmake -query QT_VERSION
+          if ($LASTEXITCODE -ne 0) { throw "Cannot identify Qt version" }
+          @(
+            "Commit: $env:GITHUB_SHA"
+            "Ref: $env:GITHUB_REF"
+            "Workflow: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            "Run attempt: $env:GITHUB_RUN_ATTEMPT"
+            "Target: $env:RUST_TARGET"
+            "Profile: release (optimized, debug info enabled, not stripped)"
+            "Qt: $qtVersion"
+            "Qt Bridge: $bridgeRevision"
+            ""
+          ) | Set-Content "$packageDirectory/BUILD-INFO.txt" -Encoding utf8
+          rustc -Vv | Add-Content "$packageDirectory/BUILD-INFO.txt" -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { throw "Cannot identify Rust toolchain" }
+
+          $packageRoot = (Resolve-Path $packageDirectory).Path
+          Get-ChildItem $packageRoot -Recurse -File |
+            Where-Object { $_.Extension -in @('.exe', '.dll', '.pdb') } |
+            Sort-Object FullName |
+            ForEach-Object {
+              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+              $relativePath = [IO.Path]::GetRelativePath($packageRoot, $_.FullName)
+              "$hash  $relativePath"
+            } | Set-Content "$packageDirectory/SHA256SUMS.txt" -Encoding utf8
+
+      - name: Upload runnable application and matching symbols
+        uses: actions/upload-artifact@v7
+        with:
+          name: tailer-windows-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/windows-diagnostics/
+          if-no-files-found: error
+          retention-days: 30
